@@ -1,0 +1,28 @@
+{#- Audit log. Context: base_context(...) + events (list[AuditEvent], newest first) -#}
+{% extends "base.html" %}
+{% from "components/icons.html" import icon %}
+{% import "components/ui.html" as ui %}
+{% import "components/plant.html" as pl %}
+{% block content %}
+{% set P = href_prefix or "" %}
+<div class="page-head">
+  <div>
+    <h1>Audit log</h1>
+    <p class="lede">Append-only record of every write in this sandbox: who did it (agent, person or system), what changed, and the evidence it relied on.</p>
+  </div>
+  <div class="page-actions">
+    {% set agent_n = events|selectattr('actor', 'equalto', 'agent')|list|length %}
+    {{ ui.badge(events|length ~ " events", "neutral", dot=False) }}
+    {{ ui.badge(agent_n ~ " by agent", "neutral", dot=False) }}
+  </div>
+</div>
+{% call ui.panel("Events", id="audit", count=events|length, body_cls="") %}
+  {% if events %}
+  <ul class="audit" id="audit-list">
+    {% for e in events %}{{ pl.audit_row(e, prefix=P) }}{% endfor %}
+  </ul>
+  {% else %}
+  <div class="panel-body">{{ ui.empty("No events yet", "Actions taken in this sandbox will appear here.", "list") }}</div>
+  {% endif %}
+{% endcall %}
+{% endblock %}

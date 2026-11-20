@@ -78,6 +78,7 @@ class Asset(BaseModel):
     zone: str  # "carcase_chillers", "refrigeration", "boning", "loadout"
     tags: list[str] = []  # instrument tags on this asset, e.g. ["TT-401", "TT-402"]
     running: bool | None = None  # compressors only
+    state: str | None = None  # compressors only: "run" | "standby" | "tripped"
     detail: dict[str, Any] = {}  # e.g. {"suction_c": -6.3, "discharge_c": 28.9}
 
 
@@ -105,6 +106,7 @@ class Alarm(BaseModel):
     value: str  # display string, e.g. "6.8 °C / 2.1 °C"
     limit: str  # e.g. "Δ > 2.0 °C (15 min)"
     active: bool = True
+    short_label: str = ""  # mimic badge, e.g. "PROBE MISMATCH"; derived from description when empty
 
 
 class Lot(BaseModel):
@@ -117,6 +119,7 @@ class Lot(BaseModel):
     export: bool = False
     status: LotStatus = LotStatus.READY
     dispatch_due: datetime | None = None
+    version: int = 1  # bumped on every hold, release or dispatch change
 
 
 class WorkOrder(BaseModel):
@@ -168,6 +171,16 @@ class AuditEvent(BaseModel):
     detail: str = ""
     evidence_ids: list[str] = []  # record ids the action relied on
     run_id: str | None = None
+
+
+class EvidenceRef(BaseModel):
+    """A record an agent step, approval or handover cited, described for a person checking it."""
+
+    id: str  # "TT-401", "L-2231", "WO-1042"
+    kind: str  # tag | lot | wo | alarm | msg | hold | permit | approval | asset | record
+    title: str  # "Chiller 4 air (primary)"
+    detail: str = ""  # "6.8 °C · good · 05:58"
+    version: int | None = None  # record version where the record has one
 
 
 class PlantSnapshot(BaseModel):
@@ -305,3 +318,34 @@ class RunTrace(BaseModel):
     total_tokens: int = 0
     duration_ms: int = 0
     extra: dict[str, Any] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------- evals
+
+
+class EvalCheck(BaseModel):
+    name: str
+    passed: bool
+    detail: str = ""
+
+
+class EvalResult(BaseModel):
+    """One eval case, as written by ``python -m evals.run`` and rendered by the Evals page."""
+
+    id: str
+    title: str
+    category: str  # "scenario" | "adversarial" | "approval"
+    scenario: Scenario | None = None
+    mode: str = "scripted"  # "scripted" | "live"
+    passed: bool
+    assertions: list[EvalCheck] = []
+    conclusion: str = ""
+    confidence: str = ""
+    model: str = ""
+    model_calls: int = 0
+    steps: int = 0
+    cost_usd: float = 0.0
+    latency_ms: int = 0
+    cost_basis: str = ""  # "recorded" | "live" | "none"
+    run_id: str | None = None
+    note: str = ""

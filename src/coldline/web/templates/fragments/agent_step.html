@@ -1,0 +1,3 @@
+{#- SSE fragment: one agent step, appended to #agent-steps. Context: step (TraceStep) -#}
+{% import "components/agent.html" as ag %}
+{{ ag.step_card(step, enter=True) }}

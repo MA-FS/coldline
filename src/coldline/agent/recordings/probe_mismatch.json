@@ -1,0 +1,521 @@
+{
+  "run_id": "R-7841",
+  "session_id": "recording",
+  "scenario": "probe_mismatch",
+  "mode": "live",
+  "model": "claude-sonnet-5-5",
+  "started_at": "2026-11-21T06:00:00+08:00",
+  "status": "awaiting_approval",
+  "steps": [
+    {
+      "n": 1,
+      "kind": "think",
+      "title": "Model call 1 (limit 8)",
+      "summary": "I'm checking the CH4 probe trends, its stored lots, work orders, and the inbox, since the alarm and historian screen both point at CH4.",
+      "args": {},
+      "result_preview": "in 5173 tok (0 cached) · out 321 tok · US$0.0161 · claude-sonnet-5-5",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 3487,
+      "input_tokens": 5173,
+      "output_tokens": 321,
+      "cost_usd": 0.01614,
+      "evidence_ids": []
+    },
+    {
+      "n": 2,
+      "kind": "tool",
+      "title": "get_sensor_trend",
+      "summary": "Read 90 min of history for TT-401, TT-402",
+      "args": {
+        "tags": [
+          "TT-401",
+          "TT-402"
+        ],
+        "window_min": 90
+      },
+      "result_preview": "TT-401 2.1->6.8 °C (good) · TT-402 2.1->2.1 °C (good) · CH4: probes_disagree",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 2,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 3,
+      "kind": "tool",
+      "title": "list_lots_in_zone",
+      "summary": "1 lot(s) in CH4",
+      "args": {
+        "zone_asset_id": "CH4"
+      },
+      "result_preview": "L-2231 120 carcases ready due 06:15",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "L-2231"
+      ]
+    },
+    {
+      "n": 4,
+      "kind": "tool",
+      "title": "find_work_orders",
+      "summary": "1 open work order(s) on CH4",
+      "args": {
+        "asset_id": "CH4",
+        "open_only": true
+      },
+      "result_preview": "WO-1042 open v1: TT-401 reading high intermittently, check calibration",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "WO-1042"
+      ]
+    },
+    {
+      "n": 5,
+      "kind": "tool",
+      "title": "read_inbox",
+      "summary": "Read 0 inbox message(s) as untrusted data",
+      "args": {},
+      "result_preview": "0 message(s)",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": []
+    },
+    {
+      "n": 6,
+      "kind": "tool",
+      "title": "get_asset",
+      "summary": "Chiller 4 (chiller)",
+      "args": {
+        "asset_id": "CH4"
+      },
+      "result_preview": "CH4 tags=TT-401,TT-402,EV4-SUP,EV4-RET",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "CH4"
+      ]
+    },
+    {
+      "n": 7,
+      "kind": "think",
+      "title": "Model call 2 (limit 8)",
+      "summary": "TT-401 now reads 6.8 °C against TT-402's 2.1 °C, so I'm putting a precautionary hold on L-2231 (due 06:15) and will propose a dispatch move and a WO-1042 note next.",
+      "args": {},
+      "result_preview": "in 6934 tok (5169 cached) · out 761 tok · US$0.0125 · claude-sonnet-5-5",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 6331,
+      "input_tokens": 6934,
+      "output_tokens": 761,
+      "cost_usd": 0.012538,
+      "evidence_ids": []
+    },
+    {
+      "n": 8,
+      "kind": "tool",
+      "title": "place_qa_hold",
+      "summary": "Precautionary QA hold QH-0001 placed on L-2231",
+      "args": {
+        "lot_id": "L-2231",
+        "reason": "CH4 probes disagree: TT-401 6.8C vs TT-402 2.1C (gap >2C since 05:42). Cause unconfirmed; precautionary hold pending handheld check.",
+        "evidence_ids": [
+          "TT-401",
+          "TT-402",
+          "L-2231"
+        ]
+      },
+      "result_preview": "QH-0001 active on L-2231",
+      "tier": "auto",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "QH-0001",
+        "L-2231",
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 9,
+      "kind": "tool",
+      "title": "propose_dispatch_change",
+      "summary": "Proposal AP-0001 queued: Move L-2231 dispatch 06:15 -> 09:00",
+      "args": {
+        "lot_id": "L-2231",
+        "new_due": "09:00",
+        "reason": "Lot due 06:15 is held; probes disagree on CH4. Delay so a handheld reference check and TT-401 loop check can be done first.",
+        "evidence_ids": [
+          "TT-401",
+          "TT-402",
+          "L-2231"
+        ]
+      },
+      "result_preview": "AP-0001 pending · needs Shift Supervisor",
+      "tier": "approve",
+      "ok": true,
+      "latency_ms": 1,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "AP-0001",
+        "L-2231",
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 10,
+      "kind": "guardrail",
+      "title": "Tier check: dispatch change requires approval",
+      "summary": "Not executed. AP-0001 waits for Shift Supervisor; it expires if any of L-2231, TT-401, TT-402 changes first.",
+      "args": {},
+      "result_preview": "",
+      "tier": "approve",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "AP-0001"
+      ]
+    },
+    {
+      "n": 11,
+      "kind": "tool",
+      "title": "propose_work_order_amendment",
+      "summary": "Proposal AP-0002 queued: Add evidence note to WO-1042",
+      "args": {
+        "wo_id": "WO-1042",
+        "note": "06:00 2026-11-21: TT-401 rose from 2.1C (05:35) to 6.8C while independent TT-402 stayed 2.1C. Gap >2C since 05:42 (AL-0001). Cause unconfirmed. Please loop-check/calibrate TT-401 and take a handheld reading in CH4.",
+        "rationale": "New evidence today of TT-401 diverging from TT-402, relevant to the open TT-401 calibration fault.",
+        "evidence_ids": [
+          "TT-401",
+          "TT-402",
+          "WO-1042"
+        ]
+      },
+      "result_preview": "AP-0002 pending · needs Shift Supervisor or Maintenance Planner",
+      "tier": "approve",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "AP-0002",
+        "WO-1042",
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 12,
+      "kind": "guardrail",
+      "title": "Tier check: work-order amendment requires approval",
+      "summary": "Not executed. AP-0002 waits for Shift Supervisor or Maintenance Planner; it expires if any of WO-1042, TT-401, TT-402 changes first.",
+      "args": {},
+      "result_preview": "",
+      "tier": "approve",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "AP-0002"
+      ]
+    },
+    {
+      "n": 13,
+      "kind": "think",
+      "title": "Model call 3 (limit 8)",
+      "summary": "Calling write_handover_note",
+      "args": {},
+      "result_preview": "in 8140 tok (6932 cached) · out 492 tok · US$0.0086 · claude-sonnet-5-5",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 4358,
+      "input_tokens": 8140,
+      "output_tokens": 492,
+      "cost_usd": 0.008632,
+      "evidence_ids": []
+    },
+    {
+      "n": 14,
+      "kind": "tool",
+      "title": "write_handover_note",
+      "summary": "Handover accepted (unconfirmed), 5 citation(s) verified",
+      "args": {
+        "conclusion": "CH4 probes disagree (TT-401 6.8C vs TT-402 2.1C); cause unconfirmed, L-2231 held pending handheld check.",
+        "confidence": "unconfirmed",
+        "note_markdown": "**What happened:** AL-0001. TT-401 rose from 2.1C (05:35) to 6.8C at 06:00, while independent TT-402 stayed at 2.1C [TT-401][TT-402]. Probes disagree - cause unconfirmed. It could be a TT-401 fault or a real local warm spot; the evidence does not separate them. Open WO-1042 already notes TT-401 reading high intermittently [WO-1042]. Inbox is empty.\n\n**Done:**\n- Precautionary QA hold on L-2231 (120 carcases, export, due 06:15) [QH-0001][L-2231].\n\n**Waiting for approval:**\n- AP-0001: move L-2231 dispatch 06:15 to 09:00 (Shift Supervisor).\n- AP-0002: add today's evidence to WO-1042 (Supervisor or Planner).\n\n**Next physical check:** take a handheld reference reading in CH4 and loop-check TT-401 before any release. Only QA can release the hold."
+      },
+      "result_preview": "Probes disagree - cause unconfirmed.",
+      "tier": "auto",
+      "ok": true,
+      "latency_ms": 1,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "TT-401",
+        "TT-402",
+        "WO-1042",
+        "QH-0001",
+        "L-2231"
+      ]
+    },
+    {
+      "n": 15,
+      "kind": "guardrail",
+      "title": "Evidence check: probes disagree - confidence capped at 'unconfirmed'",
+      "summary": "TT-401 6.8 °C (fresh) · TT-402 2.1 °C (fresh) · mean gap 2.5 °C over 15 min -> probes disagree Model wording was consistent with the evidence; headline set by code.",
+      "args": {},
+      "result_preview": "",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "CH4",
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 16,
+      "kind": "conclusion",
+      "title": "Probes disagree - cause unconfirmed.",
+      "summary": "Confidence: unconfirmed · 1 automatic action(s) · 2 proposal(s) awaiting approval",
+      "args": {},
+      "result_preview": "",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "AP-0001",
+        "AP-0002",
+        "CH4",
+        "L-2231",
+        "QH-0001",
+        "TT-401",
+        "TT-402",
+        "WO-1042"
+      ]
+    }
+  ],
+  "conclusion": "Probes disagree - cause unconfirmed.",
+  "confidence": "unconfirmed",
+  "handover_note": "**What happened:** AL-0001. TT-401 rose from 2.1C (05:35) to 6.8C at 06:00, while independent TT-402 stayed at 2.1C [TT-401][TT-402]. Probes disagree - cause unconfirmed. It could be a TT-401 fault or a real local warm spot; the evidence does not separate them. Open WO-1042 already notes TT-401 reading high intermittently [WO-1042]. Inbox is empty.\n\n**Done:**\n- Precautionary QA hold on L-2231 (120 carcases, export, due 06:15) [QH-0001][L-2231].\n\n**Waiting for approval:**\n- AP-0001: move L-2231 dispatch 06:15 to 09:00 (Shift Supervisor).\n- AP-0002: add today's evidence to WO-1042 (Supervisor or Planner).\n\n**Next physical check:** take a handheld reference reading in CH4 and loop-check TT-401 before any release. Only QA can release the hold.\n\n**Checks computed in code (not by the model)**\n- CH4: TT-401 6.8 °C (fresh) · TT-402 2.1 °C (fresh) · mean gap 2.5 °C over 15 min -> probes disagree\n- Required follow-up: Take a handheld reference reading in Chiller 4 and loop-check TT-401 before releasing product.",
+  "approvals": [],
+  "total_cost_usd": 0.03731,
+  "total_tokens": 21821,
+  "duration_ms": 14275,
+  "extra": {
+    "recording_id": "probe_mismatch",
+    "recorded": "live",
+    "recorded_at": "2026-11-20T09:26:03+00:00",
+    "description": "Chiller 4 primary probe drifts up while the independent probe holds steady.",
+    "requires_stale": [],
+    "prompt_version": "345442da9f",
+    "model_turns": [
+      {
+        "think": "I'm checking the CH4 probe trends, its stored lots, work orders, and the inbox, since the alarm and historian screen both point at CH4.",
+        "tool_calls": [
+          {
+            "name": "get_sensor_trend",
+            "input": {
+              "tags": [
+                "TT-401",
+                "TT-402"
+              ],
+              "window_min": 90
+            }
+          },
+          {
+            "name": "list_lots_in_zone",
+            "input": {
+              "zone_asset_id": "CH4"
+            }
+          },
+          {
+            "name": "find_work_orders",
+            "input": {
+              "asset_id": "CH4"
+            }
+          },
+          {
+            "name": "read_inbox",
+            "input": {}
+          },
+          {
+            "name": "get_asset",
+            "input": {
+              "asset_id": "CH4"
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 4,
+          "output_tokens": 321,
+          "cache_creation_input_tokens": 5169,
+          "cache_read_input_tokens": 0
+        },
+        "latency_ms": 3487,
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "tool_use"
+      },
+      {
+        "think": "TT-401 now reads 6.8 °C against TT-402's 2.1 °C, so I'm putting a precautionary hold on L-2231 (due 06:15) and will propose a dispatch move and a WO-1042 note next.",
+        "tool_calls": [
+          {
+            "name": "place_qa_hold",
+            "input": {
+              "lot_id": "L-2231",
+              "reason": "CH4 probes disagree: TT-401 6.8C vs TT-402 2.1C (gap >2C since 05:42). Cause unconfirmed; precautionary hold pending handheld check.",
+              "evidence_ids": [
+                "TT-401",
+                "TT-402",
+                "L-2231"
+              ]
+            }
+          },
+          {
+            "name": "propose_dispatch_change",
+            "input": {
+              "lot_id": "L-2231",
+              "new_due": "09:00",
+              "reason": "Lot due 06:15 is held; probes disagree on CH4. Delay so a handheld reference check and TT-401 loop check can be done first.",
+              "evidence_ids": [
+                "TT-401",
+                "TT-402",
+                "L-2231"
+              ]
+            }
+          },
+          {
+            "name": "propose_work_order_amendment",
+            "input": {
+              "wo_id": "WO-1042",
+              "note": "06:00 2026-11-21: TT-401 rose from 2.1C (05:35) to 6.8C while independent TT-402 stayed 2.1C. Gap >2C since 05:42 (AL-0001). Cause unconfirmed. Please loop-check/calibrate TT-401 and take a handheld reading in CH4.",
+              "rationale": "New evidence today of TT-401 diverging from TT-402, relevant to the open TT-401 calibration fault.",
+              "evidence_ids": [
+                "TT-401",
+                "TT-402",
+                "WO-1042"
+              ]
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 2,
+          "output_tokens": 761,
+          "cache_creation_input_tokens": 1763,
+          "cache_read_input_tokens": 5169
+        },
+        "latency_ms": 6331,
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "tool_use"
+      },
+      {
+        "think": "",
+        "tool_calls": [
+          {
+            "name": "write_handover_note",
+            "input": {
+              "conclusion": "CH4 probes disagree (TT-401 6.8C vs TT-402 2.1C); cause unconfirmed, L-2231 held pending handheld check.",
+              "confidence": "unconfirmed",
+              "note_markdown": "**What happened:** AL-0001. TT-401 rose from 2.1C (05:35) to 6.8C at 06:00, while independent TT-402 stayed at 2.1C [TT-401][TT-402]. Probes disagree - cause unconfirmed. It could be a TT-401 fault or a real local warm spot; the evidence does not separate them. Open WO-1042 already notes TT-401 reading high intermittently [WO-1042]. Inbox is empty.\n\n**Done:**\n- Precautionary QA hold on L-2231 (120 carcases, export, due 06:15) [{{hold:L-2231}}][L-2231].\n\n**Waiting for approval:**\n- {{approval:change_dispatch:L-2231}}: move L-2231 dispatch 06:15 to 09:00 (Shift Supervisor).\n- {{approval:amend_work_order:WO-1042}}: add today's evidence to WO-1042 (Supervisor or Planner).\n\n**Next physical check:** take a handheld reference reading in CH4 and loop-check TT-401 before any release. Only QA can release the hold."
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 2,
+          "output_tokens": 492,
+          "cache_creation_input_tokens": 1206,
+          "cache_read_input_tokens": 6932
+        },
+        "latency_ms": 4358,
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "tool_use"
+      }
+    ],
+    "evidence": [
+      {
+        "asset_id": "CH4",
+        "asset_name": "Chiller 4",
+        "primary": "TT-401",
+        "reference": "TT-402",
+        "probes": [
+          {
+            "tag": "TT-401",
+            "description": "Chiller 4 air (primary)",
+            "latest_c": 6.75,
+            "latest_ts": "2026-11-21T06:00:00+08:00",
+            "quality": "good",
+            "age_min": 0.0,
+            "start_c": 2.09,
+            "peak_c": 6.75,
+            "peak_ts": "2026-11-21T06:00:00+08:00"
+          },
+          {
+            "tag": "TT-402",
+            "description": "Chiller 4 air (independent)",
+            "latest_c": 2.12,
+            "latest_ts": "2026-11-21T06:00:00+08:00",
+            "quality": "good",
+            "age_min": 0.0,
+            "start_c": 2.12,
+            "peak_c": 2.92,
+            "peak_ts": "2026-11-21T05:41:00+08:00"
+          }
+        ],
+        "mean_gap_c": 2.518666666666667,
+        "diverging": true,
+        "verdict": "probes_disagree",
+        "headline": "Probes disagree - cause unconfirmed.",
+        "recommendation": "Take a handheld reference reading in Chiller 4 and loop-check TT-401 before releasing product."
+      }
+    ],
+    "gate": {
+      "model_conclusion": "CH4 probes disagree (TT-401 6.8C vs TT-402 2.1C); cause unconfirmed, L-2231 held pending handheld check.",
+      "model_confidence": "unconfirmed",
+      "cap": "unconfirmed",
+      "rewritten": false
+    }
+  }
+}

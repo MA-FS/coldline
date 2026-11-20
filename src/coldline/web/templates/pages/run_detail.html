@@ -1,0 +1,83 @@
+{#- Run detail: tracing-console timeline.
+    Context: base_context(...) + run (RunTrace), evidence (dict[id, {title, detail, version?}]),
+             evidence_chart (Markup | None) -#}
+{% extends "base.html" %}
+{% from "components/icons.html" import icon %}
+{% import "components/ui.html" as ui %}
+{% import "components/agent.html" as ag %}
+{% block content %}
+{% set P = href_prefix or "" %}
+<div class="page-head">
+  <div>
+    <div class="eyebrow"><a href="{{ P }}/runs">Agent runs</a> / {{ run.run_id }}</div>
+    <h1 style="margin-top: 4px">{{ SCENARIO_LABELS[run.scenario][0] if run.scenario else 'Investigation' }} <span class="muted mono" style="font-size: 18px; font-weight: 500">{{ run.run_id }}</span></h1>
+  </div>
+  <div class="page-actions">
+    {{ ui.mode_badge(run.mode) }} {{ ui.status_badge(run.status) }}
+    {% if run.handover_note %}{{ ui.button("Handover note", "outline", "doc", href=P ~ "/handover?run_id=" ~ run.run_id) }}{% endif %}
+  </div>
+</div>
+
+<dl class="run-head" style="margin: 0 0 var(--s-4)">
+  <div><dt>Started</dt><dd class="mono">{{ run.started_at|hhmmss }}</dd></div>
+  <div><dt>Duration</dt><dd>{{ run.duration_ms|ms }}</dd></div>
+  <div><dt>Steps</dt><dd>{{ run.steps|length }}</dd></div>
+  <div><dt>Tokens</dt><dd>{{ run.total_tokens|num }}</dd></div>
+  <div><dt>Cost</dt><dd>{{ run.total_cost_usd|usd }}</dd></div>
+  <div><dt>Model</dt><dd class="mono">{{ run.model or '—' }}</dd></div>
+  <div><dt>Guardrail checks</dt><dd>{{ run.steps|selectattr('kind', 'equalto', 'guardrail')|list|length }}</dd></div>
+</dl>
+
+{% if run.conclusion %}<div style="margin-bottom: var(--s-4)">{{ ag.conclusion(run.conclusion, run.confidence) }}</div>{% endif %}
+
+<div class="run-layout">
+  {% call ui.panel("Trace", id="trace", meta=("Latency bar shows each step's share of the run")) %}
+  {% set total = run.duration_ms or 1 %}
+  {% set ns = namespace(offset=0) %}
+  <ol class="timeline" id="trace-steps"{% if run.status == RunStatus.RUNNING %} hx-ext="sse" sse-connect="/runs/{{ run.run_id }}/stream" sse-close="done" sse-swap="trace-step" hx-swap="beforeend"{% endif %}>
+    {% for s in run.steps %}
+      {{ ag.timeline_step(s, ns.offset, total) }}
+      {% set ns.offset = ns.offset + s.latency_ms %}
+    {% endfor %}
+  </ol>
+  {% endcall %}
+
+  <div class="stack">
+    {% if evidence_chart %}
+    {% call ui.panel("Evidence: probe comparison", id="evidence-chart") %}
+      {{ evidence_chart }}
+      <div class="legend" style="margin-top: 8px"><span><i class="amber"></i>TT-401 primary</span><span><i></i>TT-402 independent</span><span><i class="shade"></i>Δ &gt; 2.0 °C</span><span><i class="stale"></i>stale</span></div>
+    {% endcall %}
+    {% endif %}
+
+    {% set ids = [] %}
+    {% for s in run.steps %}{% for e in s.evidence_ids %}{% if e not in ids %}{% set _ = ids.append(e) %}{% endif %}{% endfor %}{% endfor %}
+    {% call ui.panel("Evidence", id="evidence", count=ids|length) %}
+      {% if ids %}
+      <table class="ev-table">
+        {% for rid in ids %}
+          {% set info = evidence.get(rid, {}) if evidence else {} %}
+          <tr id="ev-{{ rid }}">
+            <td>{{ ui.ev_chip(rid) }}</td>
+            <td><div class="t">{{ info.get('title') or evidence_kind(rid)[1] }}</div>{% if info.get('detail') %}<div class="d">{{ info.detail }}{% if info.get('version') %} · v{{ info.version }}{% endif %}</div>{% endif %}</td>
+            <td class="by">{% for s in run.steps if rid in s.evidence_ids %}#{{ s.n }}{% if not loop.last %} {% endif %}{% endfor %}</td>
+          </tr>
+        {% endfor %}
+      </table>
+      {% else %}{{ ui.empty("No evidence cited") }}{% endif %}
+    {% endcall %}
+
+    {% if run.approvals %}
+    {% call ui.panel("Proposed actions", id="approvals", count=run.approvals|length) %}
+      <div class="stack-sm">{% for a in run.approvals %}{{ ag.approval_card(a, compact=True, prefix=P) }}{% endfor %}</div>
+    {% endcall %}
+    {% endif %}
+
+    {% if run.handover_note %}
+    {% call ui.panel("Draft handover", id="handover-draft", meta="Agent draft · citations link to evidence") %}
+      <div class="prose small">{{ run.handover_note|markdown }}</div>
+    {% endcall %}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

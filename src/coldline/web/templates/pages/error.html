@@ -1,0 +1,7 @@
+{#- Error page. Context: base_context(...) + status (int), message (str) -#}
+{% extends "base.html" %}
+{% import "components/ui.html" as ui %}
+{% block content %}
+<div class="page-head"><div><h1>{{ status }}</h1><p class="lede">{{ message }}</p></div></div>
+{% call ui.panel("", id="error") %}{{ ui.empty("Nothing here", "Runs and approvals belong to the browser session that created them, and expire after two hours idle.", "inbox") }}<p style="text-align: center"><a href="/">Back to the plant overview</a></p>{% endcall %}
+{% endblock %}

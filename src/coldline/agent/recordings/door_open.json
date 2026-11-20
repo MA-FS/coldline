@@ -1,0 +1,330 @@
+{
+  "run_id": "R-7841",
+  "session_id": "recording",
+  "scenario": "door_open",
+  "mode": "live",
+  "model": "claude-sonnet-5-5",
+  "started_at": "2026-11-21T05:12:00+08:00",
+  "status": "done",
+  "steps": [
+    {
+      "n": 1,
+      "kind": "think",
+      "title": "Model call 1 (limit 8)",
+      "summary": "I'm checking CH4's two probe trends, its stored lots, its work orders, and the inbox, since the historian screen points at CH4.",
+      "args": {},
+      "result_preview": "in 5136 tok (4908 cached) · out 317 tok · US$0.0042 · claude-sonnet-5-5",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 4210,
+      "input_tokens": 5136,
+      "output_tokens": 317,
+      "cost_usd": 0.004229,
+      "evidence_ids": []
+    },
+    {
+      "n": 2,
+      "kind": "tool",
+      "title": "get_sensor_trend",
+      "summary": "Read 60 min of history for TT-401, TT-402",
+      "args": {
+        "tags": [
+          "TT-401",
+          "TT-402"
+        ],
+        "window_min": 60
+      },
+      "result_preview": "TT-401 2.1->2.1 °C (good) · TT-402 2.1->2.2 °C (good) · CH4: transient_recovered",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 2,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 3,
+      "kind": "tool",
+      "title": "list_lots_in_zone",
+      "summary": "1 lot(s) in CH4",
+      "args": {
+        "zone_asset_id": "CH4"
+      },
+      "result_preview": "L-2231 120 carcases ready due 06:15",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "L-2231"
+      ]
+    },
+    {
+      "n": 4,
+      "kind": "tool",
+      "title": "find_work_orders",
+      "summary": "1 open work order(s) on CH4",
+      "args": {
+        "asset_id": "CH4",
+        "open_only": true
+      },
+      "result_preview": "WO-1042 open v1: TT-401 reading high intermittently, check calibration",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "WO-1042"
+      ]
+    },
+    {
+      "n": 5,
+      "kind": "tool",
+      "title": "read_inbox",
+      "summary": "Read 0 inbox message(s) as untrusted data",
+      "args": {},
+      "result_preview": "0 message(s)",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": []
+    },
+    {
+      "n": 6,
+      "kind": "tool",
+      "title": "get_asset",
+      "summary": "Chiller 4 (chiller)",
+      "args": {
+        "asset_id": "CH4"
+      },
+      "result_preview": "CH4 tags=TT-401,TT-402,EV4-SUP,EV4-RET",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "CH4"
+      ]
+    },
+    {
+      "n": 7,
+      "kind": "think",
+      "title": "Model call 2 (limit 8)",
+      "summary": "Both probes agree and have recovered, so no holds or new work orders are needed; the existing WO-1042 on TT-401 calibration gets no new fault evidence from today.",
+      "args": {},
+      "result_preview": "in 6769 tok (5132 cached) · out 599 tok · US$0.0106 · claude-sonnet-5-5",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 6041,
+      "input_tokens": 6769,
+      "output_tokens": 599,
+      "cost_usd": 0.010595,
+      "evidence_ids": []
+    },
+    {
+      "n": 8,
+      "kind": "tool",
+      "title": "write_handover_note",
+      "summary": "Handover accepted (confirmed), 4 citation(s) verified",
+      "args": {
+        "conclusion": "CH4 had a brief transient rise to 4.5 °C at 05:02; both probes agree and have recovered to ~2.1 °C. No product action needed.",
+        "confidence": "confirmed",
+        "note_markdown": "**What happened**\n- CH4 air temperature rose from 2.1 °C to 4.5 °C at 05:02 on both TT-401 and TT-402. By 05:12 it was back at 2.15 and 2.18 °C [TT-401] [TT-402].\n- Code evidence check: probes agree (mean gap 0.03 °C), both fresh, verdict transient_recovered.\n- No active alarms. Inbox is empty.\n\n**Actions taken**\n- None. By procedure, a recovered rise with agreeing probes means no holds, work orders or proposals.\n- Lot L-2231 (export, due 06:15) is not held [L-2231].\n- WO-1042 (TT-401 calibration, open) is unchanged. Today's data shows no probe disagreement, so it adds no new fault evidence [WO-1042].\n\n**Awaiting approval**\n- Nothing.\n\n**Next check**\n- Keep monitoring CH4 through the 06:15 dispatch.\n- The cause of the 05:02 spike is not identified. If it recurs, check the evaporator and defrost cycle."
+      },
+      "result_preview": "CH4 had a brief transient rise to 4.5 °C at 05:02; both probes agree and have recovered to ~2.1 °C. No product action needed.",
+      "tier": "auto",
+      "ok": true,
+      "latency_ms": 1,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "TT-401",
+        "TT-402",
+        "L-2231",
+        "WO-1042"
+      ]
+    },
+    {
+      "n": 9,
+      "kind": "guardrail",
+      "title": "Evidence check passed: transient recovered",
+      "summary": "TT-401 2.1 °C (fresh) · TT-402 2.2 °C (fresh) · mean gap 0.0 °C over 15 min -> transient recovered",
+      "args": {},
+      "result_preview": "",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "CH4",
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 10,
+      "kind": "conclusion",
+      "title": "CH4 had a brief transient rise to 4.5 °C at 05:02; both probes agree and have recovered to ~2.1 °C. No product action needed.",
+      "summary": "Confidence: confirmed · 0 automatic action(s) · 0 proposal(s) awaiting approval",
+      "args": {},
+      "result_preview": "",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "CH4",
+        "L-2231",
+        "TT-401",
+        "TT-402",
+        "WO-1042"
+      ]
+    }
+  ],
+  "conclusion": "CH4 had a brief transient rise to 4.5 °C at 05:02; both probes agree and have recovered to ~2.1 °C. No product action needed.",
+  "confidence": "confirmed",
+  "handover_note": "**What happened**\n- CH4 air temperature rose from 2.1 °C to 4.5 °C at 05:02 on both TT-401 and TT-402. By 05:12 it was back at 2.15 and 2.18 °C [TT-401] [TT-402].\n- Code evidence check: probes agree (mean gap 0.03 °C), both fresh, verdict transient_recovered.\n- No active alarms. Inbox is empty.\n\n**Actions taken**\n- None. By procedure, a recovered rise with agreeing probes means no holds, work orders or proposals.\n- Lot L-2231 (export, due 06:15) is not held [L-2231].\n- WO-1042 (TT-401 calibration, open) is unchanged. Today's data shows no probe disagreement, so it adds no new fault evidence [WO-1042].\n\n**Awaiting approval**\n- Nothing.\n\n**Next check**\n- Keep monitoring CH4 through the 06:15 dispatch.\n- The cause of the 05:02 spike is not identified. If it recurs, check the evaporator and defrost cycle.\n\n**Checks computed in code (not by the model)**\n- CH4: TT-401 2.1 °C (fresh) · TT-402 2.2 °C (fresh) · mean gap 0.0 °C over 15 min -> transient recovered",
+  "approvals": [],
+  "total_cost_usd": 0.014824,
+  "total_tokens": 12821,
+  "duration_ms": 10262,
+  "extra": {
+    "recording_id": "door_open",
+    "recorded": "live",
+    "recorded_at": "2026-11-20T09:26:43+00:00",
+    "description": "Chiller 4 door left open briefly; temperature recovers.",
+    "requires_stale": [],
+    "prompt_version": "345442da9f",
+    "model_turns": [
+      {
+        "think": "I'm checking CH4's two probe trends, its stored lots, its work orders, and the inbox, since the historian screen points at CH4.",
+        "tool_calls": [
+          {
+            "name": "get_sensor_trend",
+            "input": {
+              "tags": [
+                "TT-401",
+                "TT-402"
+              ],
+              "window_min": 60
+            }
+          },
+          {
+            "name": "list_lots_in_zone",
+            "input": {
+              "zone_asset_id": "CH4"
+            }
+          },
+          {
+            "name": "find_work_orders",
+            "input": {
+              "asset_id": "CH4"
+            }
+          },
+          {
+            "name": "read_inbox",
+            "input": {}
+          },
+          {
+            "name": "get_asset",
+            "input": {
+              "asset_id": "CH4"
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 4,
+          "output_tokens": 317,
+          "cache_creation_input_tokens": 224,
+          "cache_read_input_tokens": 4908
+        },
+        "latency_ms": 4210,
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "tool_use"
+      },
+      {
+        "think": "Both probes agree and have recovered, so no holds or new work orders are needed; the existing WO-1042 on TT-401 calibration gets no new fault evidence from today.",
+        "tool_calls": [
+          {
+            "name": "write_handover_note",
+            "input": {
+              "conclusion": "CH4 had a brief transient rise to 4.5 °C at 05:02; both probes agree and have recovered to ~2.1 °C. No product action needed.",
+              "confidence": "confirmed",
+              "note_markdown": "**What happened**\n- CH4 air temperature rose from 2.1 °C to 4.5 °C at 05:02 on both TT-401 and TT-402. By 05:12 it was back at 2.15 and 2.18 °C [TT-401] [TT-402].\n- Code evidence check: probes agree (mean gap 0.03 °C), both fresh, verdict transient_recovered.\n- No active alarms. Inbox is empty.\n\n**Actions taken**\n- None. By procedure, a recovered rise with agreeing probes means no holds, work orders or proposals.\n- Lot L-2231 (export, due 06:15) is not held [L-2231].\n- WO-1042 (TT-401 calibration, open) is unchanged. Today's data shows no probe disagreement, so it adds no new fault evidence [WO-1042].\n\n**Awaiting approval**\n- Nothing.\n\n**Next check**\n- Keep monitoring CH4 through the 06:15 dispatch.\n- The cause of the 05:02 spike is not identified. If it recurs, check the evaporator and defrost cycle."
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 2,
+          "output_tokens": 599,
+          "cache_creation_input_tokens": 1635,
+          "cache_read_input_tokens": 5132
+        },
+        "latency_ms": 6041,
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "tool_use"
+      }
+    ],
+    "evidence": [
+      {
+        "asset_id": "CH4",
+        "asset_name": "Chiller 4",
+        "primary": "TT-401",
+        "reference": "TT-402",
+        "probes": [
+          {
+            "tag": "TT-401",
+            "description": "Chiller 4 air (primary)",
+            "latest_c": 2.15,
+            "latest_ts": "2026-11-21T05:12:00+08:00",
+            "quality": "good",
+            "age_min": 0.0,
+            "start_c": 2.14,
+            "peak_c": 4.48,
+            "peak_ts": "2026-11-21T05:02:00+08:00"
+          },
+          {
+            "tag": "TT-402",
+            "description": "Chiller 4 air (independent)",
+            "latest_c": 2.18,
+            "latest_ts": "2026-11-21T05:12:00+08:00",
+            "quality": "good",
+            "age_min": 0.0,
+            "start_c": 2.14,
+            "peak_c": 4.55,
+            "peak_ts": "2026-11-21T05:02:00+08:00"
+          }
+        ],
+        "mean_gap_c": 0.03333333333333333,
+        "diverging": false,
+        "verdict": "transient_recovered",
+        "headline": "Transient rise in Chiller 4 - recovered, probes agree.",
+        "recommendation": "No product action needed; keep monitoring."
+      }
+    ],
+    "gate": {
+      "model_conclusion": "CH4 had a brief transient rise to 4.5 °C at 05:02; both probes agree and have recovered to ~2.1 °C. No product action needed.",
+      "model_confidence": "confirmed",
+      "cap": "confirmed",
+      "rewritten": false
+    }
+  }
+}

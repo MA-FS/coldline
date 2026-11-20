@@ -71,6 +71,7 @@ class Simulator:
         for a in self.assets.values():
             if a.kind == AssetKind.COMPRESSOR:
                 a.running = a.id != "C3" and not (a.id == "C2" and trip)
+                a.state = "run" if a.running else ("tripped" if a.id == "C2" and trip else "standby")
                 values = [-6.3, 29.1] if a.running else [9.5, 12.3]
             else:
                 target = {"BONING": 8.0, "DOCK": 5.5}.get(a.id, 2.1)
@@ -120,6 +121,7 @@ class Simulator:
                 asset_id="CH4" if hero else "C2",
                 tags=tags if hero else tags + ["TT-501", "TT-502"],
                 description="Probe mismatch - readings disagree" if hero else "C2 trip - standby offline",
+                short_label="PROBE MISMATCH" if hero else "C2 TRIP",
                 value=" / ".join(f"{self.history[t][-1][1]:.1f} °C" for t in tags),
                 limit="Δ > 2.0 °C (15 min)" if hero else "Running compressors < 2",
             )

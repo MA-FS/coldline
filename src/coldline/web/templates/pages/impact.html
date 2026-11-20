@@ -1,0 +1,32 @@
+{#- Impact. Context: base_context(...) + kpis: [{label, value, unit?, baseline?, note, kind, spark?}],
+    assumptions: [str] -#}
+{% extends "base.html" %}
+{% from "components/icons.html" import icon %}
+{% import "components/ui.html" as ui %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Impact</h1>
+    <p class="lede">What the agent changes for a shift supervisor, measured where the demo can measure it and estimated, with the assumptions written down, where it can't.</p>
+  </div>
+</div>
+<div class="grid-3" style="margin-bottom: var(--s-5)">
+  {% for k in kpis %}
+    {{ ui.kpi(k.label, k.value, unit=k.get('unit', ''), note=k.note, baseline=k.get('baseline', ''), kind=k.kind, spark=k.get('spark')) }}
+  {% endfor %}
+</div>
+<div class="grid-2">
+  {% call ui.panel("Assumptions, stated plainly", id="assumptions") %}
+    <ol class="prose" style="padding-left: 1.2em; margin: 0">
+      {% for a in assumptions %}<li>{{ a }}</li>{% endfor %}
+    </ol>
+  {% endcall %}
+  {% call ui.panel("How each number is produced", id="method") %}
+    <div class="prose small">
+      <p><b class="strong">Measured</b> numbers come from the agent's own traces in this deployment: token counts, latency and cost per step are recorded on every run, and guardrail decisions are audit events.</p>
+      <p><b class="strong">Estimates</b> multiply a measured value by an assumption from the list. They are labelled and shown with dashed tags so they can't be mistaken for measurements.</p>
+      <p>Before trusting any of this on a real site, run the agent in shadow mode for two weeks: it investigates every alarm, a supervisor works as usual, and both timelines are compared.</p>
+    </div>
+  {% endcall %}
+</div>
+{% endblock %}

@@ -1,0 +1,165 @@
+{#- SVG plant mimic, driven by coldline.web.views.PlantView (built from a PlantSnapshot).
+    Hand-written SVG in a 1060x600 viewBox; scales crisply to any width.
+    State rules: greys for normal; amber/red outline + badge only for alarmed units; red for tripped
+    compressors; stale tags are grey italic with a hatched STALE badge. -#}
+
+{% macro _unit(v, u="°C") -%}{{ v }}{% if v != '—' %}<tspan class="m-label m-label--sm" dx="2">{{ u }}</tspan>{% endif %}{%- endmacro %}
+
+
+{% macro plant_mimic(p, selected="CH4", prefix="") -%}
+<svg class="mimic" id="mimic-svg" viewBox="0 0 1060 600" role="group" aria-labelledby="mimic-title mimic-desc">
+  <title id="mimic-title">Plant mimic: refrigeration, carcase chillers 1 to 6, boning room and load-out dock</title>
+  <desc id="mimic-desc">{{ p.active_alarm_count }} active alarm(s).{% for c in p.chillers if c.alarm %} {{ c.name }}: {{ c.badge|lower }}.{% endfor %}</desc>
+  <defs>
+    <marker id="m-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="m-arrow"/></marker>
+    <marker id="m-arrow-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--amber)"/></marker>
+    <symbol id="m-fan" viewBox="0 0 56 40">
+      <rect x="0.7" y="0.7" width="54.6" height="38.6" rx="2" class="m-glyph"/>
+      <line x1="0.7" y1="8" x2="55.3" y2="8" class="m-glyph"/>
+      <g transform="translate(28 24)">
+        <circle r="2.6" class="m-glyph"/>
+        <path d="M0,-2.6 C-4,-6 -2,-12 3,-11 C7,-10 5,-5 0,-2.6Z M2.6,0 C6,-4 12,-2 11,3 C10,7 5,5 2.6,0Z M0,2.6 C4,6 2,12 -3,11 C-7,10 -5,5 0,2.6Z M-2.6,0 C-6,4 -12,2 -11,-3 C-10,-7 -5,-5 -2.6,0Z" class="m-glyph"/>
+      </g>
+    </symbol>
+    <pattern id="m-hatch" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="5" height="5" style="fill: var(--bg-2)"/><line x1="0" y1="0" x2="0" y2="5" style="stroke: var(--stale); stroke-width: 1.2; opacity: .5"/></pattern>
+  </defs>
+
+  {# ---------------------------------------------------------------- refrigeration plant #}
+  <g id="m-refrigeration">
+    <rect x="8" y="40" width="262" height="290" rx="4" class="m-frame--group"/>
+    <text x="24" y="68" class="m-title">Refrigeration Plant</text>
+    {% for c in p.compressors %}
+      {% set cy = 118 + loop.index0 * 78 %}
+      {% set g = 'm-glyph--red' if c.state == 'tripped' else ('m-glyph--dim' if c.state == 'standby' else '') %}
+      <g class="m-compressor" data-state="{{ c.state }}" aria-label="{{ c.id }} {{ c.state }}">
+        <circle cx="46" cy="{{ cy }}" r="19" class="m-glyph {{ g }}"/>
+        <path d="M39,{{ cy - 11 }} L57,{{ cy }} L39,{{ cy + 11 }} Z" class="m-glyph {{ g }}"/>
+        <rect x="74" y="{{ cy - 21 }}" width="66" height="42" rx="2" class="m-box{% if c.state == 'tripped' %} m-box--red{% endif %}"/>
+        <text x="84" y="{{ cy - 2 }}" class="m-title">{{ c.id }}</text>
+        <text x="84" y="{{ cy + 14 }}" class="m-state{% if c.state == 'tripped' %} m-state--red{% elif c.state == 'standby' %} m-state--dim{% endif %}">{{ c.state|upper }}</text>
+        <text x="152" y="{{ cy - 4 }}" class="m-label">Suction</text>
+        <text x="260" y="{{ cy - 4 }}" text-anchor="end" class="m-value{% if c.suction == '—' %} m-value--stale{% endif %}">{{ _unit(c.suction) }}</text>
+        <text x="152" y="{{ cy + 16 }}" class="m-label">Discharge</text>
+        <text x="260" y="{{ cy + 16 }}" text-anchor="end" class="m-value{% if c.discharge == '—' %} m-value--stale{% endif %}">{{ _unit(c.discharge) }}</text>
+      </g>
+      <path d="M270,{{ cy }} H292" class="m-pipe m-pipe--thin{% if c.state == 'standby' %} m-pipe--dim{% elif c.state == 'tripped' %} m-pipe--red{% endif %}"/>
+    {% endfor %}
+    <path d="M292,{{ 118 + (p.compressors|length - 1) * 78 if p.compressors else 118 }} V104" class="m-pipe m-pipe--thin"/>
+  </g>
+
+  {# ---------------------------------------------------------------- evaporator headers #}
+  {% for label, tv, x in [("Evap. Supply", p.evap_supply, 330), ("Evap. Return", p.evap_return, 600)] %}
+  <g aria-label="{{ label }} {{ tv.value }} °C">
+    <line x1="{{ x + 105 }}" y1="54" x2="{{ x + 105 }}" y2="104" class="m-pipe m-pipe--thin"/>
+    <rect x="{{ x }}" y="18" width="210" height="36" rx="2" class="m-box"/>
+    <text x="{{ x + 14 }}" y="41" class="m-label">{{ label }}</text>
+    <text x="{{ x + 196 }}" y="41" text-anchor="end" class="m-value{% if tv.tone == 'stale' %} m-value--stale{% endif %}">{{ _unit(tv.value) }}</text>
+  </g>
+  {% endfor %}
+
+  {# ---------------------------------------------------------------- header + chillers #}
+  {% set last_cx = 300 + (p.chillers|length - 1) * 124 + 58 %}
+  <path d="M292,104 H{{ last_cx }}" class="m-pipe"/>
+  {% for c in p.chillers %}
+    {% set x = 300 + loop.index0 * 124 %}
+    {% set cx = x + 58 %}
+    {% set tone = c.alarm %}
+    <path d="M{{ cx }},104 V130" class="m-pipe" marker-end="url(#m-arrow)"/>
+    <g class="m-unit" id="m-{{ c.id }}" tabindex="0" role="button" aria-selected="{{ 'true' if c.id == selected else 'false' }}"
+       aria-label="{{ c.name }}{% for t in c.tags %}, {{ t.tag }} {{ t.value }} °C{% if t.tone == 'stale' %} stale{% endif %}{% endfor %}{% if c.badge %}, alarm: {{ c.badge|lower }}{% endif %}"
+       hx-get="{{ prefix }}/chillers/{{ c.id }}" hx-target="#chiller-detail" hx-swap="outerHTML" hx-trigger="click">
+      <rect x="{{ x }}" y="140" width="116" height="206" rx="4" class="m-frame{% if tone %} m-frame--{{ tone }}{% endif %}"/>
+      <rect x="{{ x - 4 }}" y="136" width="124" height="214" rx="6" class="m-frame--hover"/>
+      <text x="{{ cx }}" y="168" text-anchor="middle" class="m-title">{{ c.short }}</text>
+      {% for t in c.tags %}
+        {% set ty = 196 + loop.index0 * 24 %}
+        <text x="{{ x + 9 }}" y="{{ ty }}" class="m-tag">{{ t.tag }}</text>
+        <text x="{{ x + 108 if not t.direction or t.tone == 'stale' else x + 98 }}" y="{{ ty }}" text-anchor="end" class="m-value m-value--{{ t.tone }}">{{ _unit(t.value) }}</text>
+        {% if t.direction and t.tone != 'stale' %}<text x="{{ x + 101 }}" y="{{ ty }}" class="m-value m-value--{{ t.tone }}" style="font-size: 12px">{{ '↑' if t.direction == 'up' else ('↓' if t.direction == 'down' else '↔') }}</text>{% endif %}
+      {% endfor %}
+      <use href="#m-fan" x="{{ x + 30 }}" y="{{ 236 if c.badge and c.stale else 244 }}" width="56" height="40"/>
+      {% set badges = [] %}
+      {% if c.badge %}{% set _ = badges.append(('alarm', c.badge)) %}{% endif %}
+      {% for t in c.tags if t.tone == 'stale' %}{% set _ = badges.append(('stale', t.tag ~ ' STALE')) %}{% endfor %}
+      {% for kind, text in badges[:2] %}
+        {% set by = (310 if badges|length == 1 else 288) + loop.index0 * 32 %}
+        {% if kind == 'alarm' %}
+          {% set words = text.split(' ', 1) %}
+          <rect x="{{ x + 4 }}" y="{{ by }}" width="108" height="30" rx="2" class="m-badge{% if tone == 'red' %} m-badge--red{% endif %}"/>
+          <path d="M{{ x + 17 }},{{ by + 7 }} l8,15 h-16 z" style="fill: {{ 'var(--amber-ink)' if tone != 'red' else '#fff' }}"/>
+          <rect x="{{ x + 16.2 }}" y="{{ by + 12 }}" width="1.6" height="5.5" style="fill: {{ 'var(--amber)' if tone != 'red' else 'var(--red)' }}"/>
+          <rect x="{{ x + 16.2 }}" y="{{ by + 19 }}" width="1.6" height="1.6" style="fill: {{ 'var(--amber)' if tone != 'red' else 'var(--red)' }}"/>
+          {% if words|length == 2 and text|length > 11 %}
+          <text x="{{ x + 67 }}" y="{{ by + 13 }}" text-anchor="middle" class="m-badge-text{% if tone == 'red' %} m-badge-text--red{% endif %}">{{ words[0] }}</text>
+          <text x="{{ x + 67 }}" y="{{ by + 25 }}" text-anchor="middle" class="m-badge-text{% if tone == 'red' %} m-badge-text--red{% endif %}">{{ words[1][:13] }}</text>
+          {% else %}
+          <text x="{{ x + 67 }}" y="{{ by + 19 }}" text-anchor="middle" class="m-badge-text{% if tone == 'red' %} m-badge-text--red{% endif %}">{{ text[:13] }}</text>
+          {% endif %}
+        {% else %}
+          {% set by = by if badges|length > 1 else by + 8 %}
+          <rect x="{{ x + 4 }}" y="{{ by }}" width="108" height="22" rx="2" fill="url(#m-hatch)" class="m-stale"/>
+          <text x="{{ cx }}" y="{{ by + 15 }}" text-anchor="middle" class="m-stale-text" style="font-size: 10px">{{ text }}</text>
+        {% endif %}
+      {% endfor %}
+    </g>
+    <path d="M{{ cx }},346 V380" class="m-pipe{% if tone %} m-pipe--{{ tone }}{% endif %}"/>
+  {% endfor %}
+
+  {# ---------------------------------------------------------------- product flow to boning + dock #}
+  <path d="M{{ last_cx }},380 H200 V412" class="m-pipe" marker-end="url(#m-arrow)"/>
+  <path d="M770,380 V412" class="m-pipe" marker-end="url(#m-arrow)"/>
+  <path d="M468,506 H500" class="m-pipe m-pipe--thin"/>
+
+  {# boning room #}
+  <g id="m-boning" aria-label="Boning room {{ p.boning_temp.value }} °C">
+    <rect x="8" y="420" width="460" height="172" rx="4" class="m-frame--group"/>
+    <text x="26" y="452" class="m-title m-title--lg">Boning Room</text>
+    <line x1="40" y1="480" x2="280" y2="480" class="m-glyph" style="stroke-width: 2.4"/>
+    {% for hx in [64, 110, 156, 202, 248] %}
+      <line x1="{{ hx }}" y1="480" x2="{{ hx }}" y2="490" class="m-glyph"/>
+      <circle cx="{{ hx }}" cy="492" r="2.5" class="m-glyph"/>
+      <path d="M{{ hx }},496 c-9,6 -12,22 -9,36 c1.5,7 5,12 6,14 l3,-6 l3,6 c1,-2 4.5,-7 6,-14 c3,-14 0,-30 -9,-36 z" class="m-glyph"/>
+    {% endfor %}
+    <path d="M48,552 V566 H290" class="m-glyph" marker-end="url(#m-arrow)"/>
+    <line x1="322" y1="462" x2="322" y2="572" class="m-divider"/>
+    <text x="340" y="500" class="m-label" style="font-size: 13px">Room Temp</text>
+    <text x="340" y="536" class="m-value m-value--xl m-value--{{ p.boning_temp.tone }}">{{ p.boning_temp.value }}<tspan class="m-label" style="font-size: 15px" dx="4">°C</tspan></text>
+    <text x="340" y="560" class="m-tag">{{ p.boning_temp.tag }}</text>
+  </g>
+
+  {# load-out dock #}
+  {% set lot = p.due_lot %}
+  <g id="m-dock" aria-label="Load-out dock{% if lot %}, {{ lot.id }} {{ lot.status }} due {{ lot.dispatch_due|hhmm }}{% endif %}">
+    <rect x="500" y="420" width="552" height="172" rx="4" class="m-frame--group"/>
+    <text x="518" y="452" class="m-title m-title--lg">Load-Out Dock</text>
+    {% for bx in [526, 650] %}
+      <path d="M{{ bx }},572 V474 H{{ bx + 104 }} V572" class="m-glyph" style="stroke-width: 2"/>
+      <g transform="translate({{ bx + 22 }} 494)" class="m-truck">
+        <rect x="0" y="0" width="60" height="62" rx="6" class="m-glyph"/>
+        <rect x="7" y="8" width="46" height="20" rx="2" class="m-glyph"/>
+        <line x1="7" y1="38" x2="53" y2="38" class="m-glyph"/>
+        <rect x="6" y="44" width="10" height="5" rx="1" class="m-glyph"/><rect x="44" y="44" width="10" height="5" rx="1" class="m-glyph"/>
+        <rect x="4" y="62" width="10" height="10" rx="1" class="m-glyph"/><rect x="46" y="62" width="10" height="10" rx="1" class="m-glyph"/>
+      </g>
+    {% endfor %}
+    <line x1="514" y1="576" x2="776" y2="576" class="m-glyph"/>
+    <line x1="800" y1="462" x2="800" y2="572" class="m-divider"/>
+    {% if lot %}
+      <text x="820" y="490" class="m-label" style="font-size: 13px">Load</text>
+      <text x="924" y="491" class="m-value" style="font-size: 18px; font-family: var(--font-ui); font-weight: 700">{{ lot.id }}</text>
+      <text x="820" y="524" class="m-label" style="font-size: 13px">Status</text>
+      {% if lot.status == 'hold' %}
+        <rect x="922" y="508" width="82" height="22" rx="2" class="m-badge"/>
+        <text x="963" y="523.5" text-anchor="middle" class="m-badge-text" style="font-size: 11px">QA HOLD</text>
+      {% else %}
+        <text x="924" y="525" class="m-value" style="font-size: 15px; font-family: var(--font-ui); font-weight: 700">{{ lot.status|upper }}</text>
+      {% endif %}
+      <text x="820" y="558" class="m-label" style="font-size: 13px">Dispatch (due)</text>
+      <text x="924" y="560" class="m-value m-value--lg">{{ lot.dispatch_due|hhmm }}</text>
+      <text x="1036" y="452" text-anchor="end" class="m-tag">{{ lot.zone_asset_id }} · {{ lot.carcases }} carcases</text>
+    {% else %}
+      <text x="820" y="524" class="m-label">No loads due</text>
+    {% endif %}
+  </g>
+</svg>
+{%- endmacro %}

@@ -1,0 +1,102 @@
+{#- Plant data components: trend block, chiller detail, alarm table, audit row.
+    Import with: {% import "components/plant.html" as pl %} -#}
+{% from "components/icons.html" import icon %}
+{% import "components/ui.html" as ui %}
+
+{#- Trend block: header (tag + description), big current value with direction, SVG chart. -#}
+{% macro trend_block(trend, chart, tv=None, role="") -%}
+{% set last = trend.points[-1] if trend.points else None %}
+{% set good = trend.points|selectattr('quality', 'equalto', 'good')|list %}
+{% set last_good = good[-1] if good else None %}
+<div class="trend">
+  <div class="trend-head"><span class="trend-tag">{{ trend.tag }}</span><span class="trend-desc">{{ role or trend.description }}</span></div>
+  <div class="trend-now">
+    <span class="trend-value num{% if tv %} val--{{ tv.tone }}{% endif %}">{{ (last.value_c if last else None)|temp }}<small> {{ trend.unit }}</small></span>
+    {% if tv and tv.tone == 'stale' %}<span class="stale-mark">STALE · last good {{ last_good.ts|hhmm if last_good else '—' }}</span>
+    {% elif tv and tv.direction == 'up' %}<span class="trend-dir">{{ icon('arrow-up', 'icon-sm') }} Rising</span>
+    {% elif tv and tv.direction == 'down' %}<span class="trend-dir">{{ icon('arrow-down', 'icon-sm') }} Falling</span>
+    {% elif tv and tv.direction == 'steady' %}<span class="trend-dir">{{ icon('steady', 'icon-sm') }} Steady</span>{% endif %}
+  </div>
+  {{ chart }}
+</div>
+{%- endmacro %}
+
+{#- Chiller detail panel. `d` is a dict built by the route:
+    {asset, chiller (ChillerView), trends: [Trend, Trend], charts: [svg, svg], lot, alarm} -#}
+{% macro chiller_detail(d) -%}
+{% set c = d.chiller %}
+<section class="panel detail{% if c.alarm %} panel--{{ c.alarm }}{% endif %}" id="chiller-detail" aria-labelledby="detail-h">
+  <header class="panel-head">
+    <h2 class="panel-title" id="detail-h">{{ c.name }} · Details</h2>
+    {% if c.badge %}<span class="meta">{{ ui.prio(d.alarm.priority) if d.alarm else '' }}</span>{% endif %}
+  </header>
+  <div class="detail-body">
+    {% for t in d.trends %}
+      {{ trend_block(t, d.charts[loop.index0], c.tags[loop.index0] if c.tags|length > loop.index0 else None,
+                     ('Primary' if loop.first else 'Independent') ~ ' probe') }}
+    {% endfor %}
+    <div>
+      {% set lot = d.lot %}
+      {{ ui.kv([
+        ("Zone", "Carcase chillers"),
+        ("Capacity", (d.asset.detail.get('capacity_carcases', '—') ~ ' carcases')),
+        ("Status", d.asset.detail.get('status', 'In service')),
+        ("Product", (lot.id ~ ' · ' ~ lot.carcases ~ ' ct · ' ~ lot.status|upper) if lot else 'Empty'),
+        ("Dispatch due", lot.dispatch_due|hhmm if lot else '—'),
+        ("Alarms", (d.alarm.description ~ ' (active)') if d.alarm else 'None'),
+      ]) }}
+      <div class="legend" style="margin-top: 10px">
+        <span><i class="amber"></i>abnormal</span><span><i class="ghost"></i>other probe</span><span><i class="shade"></i>Δ &gt; 2 °C</span><span><i class="event"></i>event</span><span><i class="stale"></i>stale</span>
+      </div>
+    </div>
+  </div>
+</section>
+{%- endmacro %}
+
+{#- Alarm table (alarm strip). -#}
+{% macro alarm_table(alarms, title="Alarms (Active)") -%}
+{% set active = alarms|selectattr('active')|list %}
+<section class="panel alarm-strip" id="alarms" aria-labelledby="alarms-h">
+  <header class="panel-head">
+    <h2 class="panel-title" id="alarms-h">{{ title }} <span class="count">{{ active|length }}</span></h2>
+    <span class="meta">Newest first · ISA-18.2 priorities</span>
+  </header>
+  {% if alarms %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th class="th-sort">Time</th><th>Priority</th><th>Area</th><th>Asset</th><th>Tag</th><th>Description</th><th>Value</th><th>Limit</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for a in alarms %}
+        <tr class="{{ '' if a.active else 'is-inactive' }}">
+          <td class="mono">{{ a.ts|hhmmss }}</td>
+          <td>{{ ui.prio(a.priority, a.active) }}</td>
+          <td>{{ 'Refrigeration' if a.asset_id.startswith('C') and not a.asset_id.startswith('CH') else 'Chillers' }}</td>
+          <td>{{ a.asset_id|replace('CH', 'Chiller ') }}</td>
+          <td class="mono">{{ a.tags|join(' / ') }}</td>
+          <td>{{ a.description }}</td>
+          <td class="mono nowrap">{{ a.value }}</td>
+          <td class="mono nowrap muted">{{ a.limit }}</td>
+          <td>{{ 'Active' if a.active else 'Cleared' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="panel-body">{{ ui.empty("No active alarms", "All tags within limits.", "check-circle") }}</div>
+  {% endif %}
+</section>
+{%- endmacro %}
+
+{#- Audit row -#}
+{% macro audit_row(e, prefix="") -%}
+{% set is_agent = e.actor == 'agent' %}
+{% set is_system = e.actor == 'system' %}
+<li class="audit-row{% if e.action.startswith('refuse') %} audit-row--refuse{% endif %}" id="audit-{{ e.id }}">
+  <span class="audit-ts">{{ e.ts|hhmmss }}</span>
+  <span class="audit-actor{% if is_agent %} audit-actor--agent{% endif %}"><span class="avatar">{{ icon('sparkle' if is_agent else ('gear' if is_system else 'user')) }}</span>{{ e.actor }}</span>
+  <span class="audit-action">{{ e.action }} <span class="target">→ {{ e.target }}</span></span>
+  <div class="audit-detail">{{ e.detail }}{% if e.evidence_ids %}<div>{{ ui.ev_list(e.evidence_ids) }}</div>{% endif %}</div>
+  <span class="audit-run">{% if e.run_id %}<a href="{{ prefix }}/runs/{{ e.run_id }}">{{ e.run_id }}</a>{% else %}<span class="dim">{{ e.id }}</span>{% endif %}</span>
+</li>
+{%- endmacro %}

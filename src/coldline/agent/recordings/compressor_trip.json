@@ -1,0 +1,826 @@
+{
+  "run_id": "R-7841",
+  "session_id": "recording",
+  "scenario": "compressor_trip",
+  "mode": "live",
+  "model": "claude-sonnet-5-5",
+  "started_at": "2026-11-21T05:20:00+08:00",
+  "status": "awaiting_approval",
+  "steps": [
+    {
+      "n": 1,
+      "kind": "think",
+      "title": "Model call 1 (limit 8)",
+      "summary": "I'll check the alarm context, the probe trends, the lots, and the work orders for both chillers and the compressor.",
+      "args": {},
+      "result_preview": "in 5279 tok (4908 cached) · out 553 tok · US$0.0069 · claude-sonnet-5-5",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 4833,
+      "input_tokens": 5279,
+      "output_tokens": 553,
+      "cost_usd": 0.006946,
+      "evidence_ids": []
+    },
+    {
+      "n": 2,
+      "kind": "tool",
+      "title": "get_sensor_trend",
+      "summary": "Read 120 min of history for TT-401, TT-402",
+      "args": {
+        "tags": [
+          "TT-401",
+          "TT-402"
+        ],
+        "window_min": 120
+      },
+      "result_preview": "TT-401 2.1->7.4 °C (good) · TT-402 2.1->7.4 °C (good) · CH4: excursion_confirmed",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 3,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 3,
+      "kind": "tool",
+      "title": "get_sensor_trend",
+      "summary": "Read 120 min of history for TT-501, TT-502",
+      "args": {
+        "tags": [
+          "TT-501",
+          "TT-502"
+        ],
+        "window_min": 120
+      },
+      "result_preview": "TT-501 2.1->7.5 °C (good) · TT-502 2.1->7.5 °C (good) · CH5: excursion_confirmed",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 1,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "TT-501",
+        "TT-502"
+      ]
+    },
+    {
+      "n": 4,
+      "kind": "tool",
+      "title": "list_lots_in_zone",
+      "summary": "1 lot(s) in CH4",
+      "args": {
+        "zone_asset_id": "CH4"
+      },
+      "result_preview": "L-2231 120 carcases ready due 06:15",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "L-2231"
+      ]
+    },
+    {
+      "n": 5,
+      "kind": "tool",
+      "title": "list_lots_in_zone",
+      "summary": "1 lot(s) in CH5",
+      "args": {
+        "zone_asset_id": "CH5"
+      },
+      "result_preview": "L-2232 86 carcases ready due 07:28",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "L-2232"
+      ]
+    },
+    {
+      "n": 6,
+      "kind": "tool",
+      "title": "find_work_orders",
+      "summary": "1 open work order(s) on CH4",
+      "args": {
+        "asset_id": "CH4",
+        "open_only": true
+      },
+      "result_preview": "WO-1042 open v1: TT-401 reading high intermittently, check calibration",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "WO-1042"
+      ]
+    },
+    {
+      "n": 7,
+      "kind": "tool",
+      "title": "find_work_orders",
+      "summary": "0 open work order(s) on CH5",
+      "args": {
+        "asset_id": "CH5",
+        "open_only": true
+      },
+      "result_preview": "none",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": []
+    },
+    {
+      "n": 8,
+      "kind": "tool",
+      "title": "find_work_orders",
+      "summary": "0 open work order(s) on C2",
+      "args": {
+        "asset_id": "C2",
+        "open_only": true
+      },
+      "result_preview": "none",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": []
+    },
+    {
+      "n": 9,
+      "kind": "tool",
+      "title": "get_asset",
+      "summary": "Compressor 2 (compressor) NOT running",
+      "args": {
+        "asset_id": "C2"
+      },
+      "result_preview": "C2 tags=C2-SUC,C2-DIS NOT running {'suction_c': 9.49, 'discharge_c': 12.35}",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "C2"
+      ]
+    },
+    {
+      "n": 10,
+      "kind": "tool",
+      "title": "read_inbox",
+      "summary": "Read 0 inbox message(s) as untrusted data",
+      "args": {},
+      "result_preview": "0 message(s)",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": []
+    },
+    {
+      "n": 11,
+      "kind": "think",
+      "title": "Model call 2 (limit 8)",
+      "summary": "Both chillers show a confirmed real excursion with probes in agreement. I'll hold both lots, raise a work order for C2 (none is open), and draft the permit.",
+      "args": {},
+      "result_preview": "in 8620 tok (5275 cached) · out 1321 tok · US$0.0221 · claude-sonnet-5-5",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 9159,
+      "input_tokens": 8620,
+      "output_tokens": 1321,
+      "cost_usd": 0.022099,
+      "evidence_ids": []
+    },
+    {
+      "n": 12,
+      "kind": "tool",
+      "title": "place_qa_hold",
+      "summary": "Precautionary QA hold QH-0001 placed on L-2231",
+      "args": {
+        "lot_id": "L-2231",
+        "reason": "CH4 both probes above 5.0 C limit since 05:05 (TT-401 7.41, TT-402 7.36); confirmed excursion after C2 trip.",
+        "evidence_ids": [
+          "TT-401",
+          "TT-402",
+          "L-2231",
+          "C2"
+        ]
+      },
+      "result_preview": "QH-0001 active on L-2231",
+      "tier": "auto",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "QH-0001",
+        "L-2231",
+        "TT-401",
+        "TT-402",
+        "C2"
+      ]
+    },
+    {
+      "n": 13,
+      "kind": "tool",
+      "title": "place_qa_hold",
+      "summary": "Precautionary QA hold QH-0002 placed on L-2232",
+      "args": {
+        "lot_id": "L-2232",
+        "reason": "CH5 both probes above 5.0 C limit since 05:05 (TT-501 7.45, TT-502 7.45); confirmed excursion after C2 trip.",
+        "evidence_ids": [
+          "TT-501",
+          "TT-502",
+          "L-2232",
+          "C2"
+        ]
+      },
+      "result_preview": "QH-0002 active on L-2232",
+      "tier": "auto",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "QH-0002",
+        "L-2232",
+        "TT-501",
+        "TT-502",
+        "C2"
+      ]
+    },
+    {
+      "n": 14,
+      "kind": "tool",
+      "title": "create_work_order",
+      "summary": "Raised WO-1043 (P1): C2 tripped 05:01 - standby offline, CH4/CH5 above limit",
+      "args": {
+        "asset_id": "C2",
+        "title": "C2 tripped 05:01 - standby offline, CH4/CH5 above limit",
+        "priority": 1,
+        "note": "C2 tripped (running=false) at ~05:01, alarm AL-0001. CH4 (TT-401/402 ~7.4 C) and CH5 (TT-501/502 ~7.5 C) both probe pairs agree above 5.0 C since 05:05. Suction 9.49 C, discharge 12.35 C. Diagnose trip cause and restore cooling."
+      },
+      "result_preview": "WO-1043 open P1 on C2",
+      "tier": "auto",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "WO-1043",
+        "C2"
+      ]
+    },
+    {
+      "n": 15,
+      "kind": "tool",
+      "title": "draft_isolation_permit",
+      "summary": "Drafted permit PD-0001 for C2 isolation",
+      "args": {
+        "asset_id": "C2",
+        "work_description": "Investigate and repair tripped Compressor 2 (AL-0001); restore refrigeration to CH4/CH5.",
+        "isolations": [
+          "Electrical isolation and lock-out of C2 motor starter",
+          "Close suction and discharge isolation valves on C2",
+          "Verify zero energy and depressurise C2 before opening"
+        ],
+        "hazards": [
+          "Refrigerant release",
+          "Stored electrical energy",
+          "Hot discharge surfaces",
+          "Pressurised system"
+        ]
+      },
+      "result_preview": "PD-0001 status=draft · 3 isolation(s)",
+      "tier": "auto",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "PD-0001",
+        "C2"
+      ]
+    },
+    {
+      "n": 16,
+      "kind": "guardrail",
+      "title": "Tier check: permit is a draft only",
+      "summary": "PD-0001 cannot be authorised by the agent; a person signs it off on site.",
+      "args": {},
+      "result_preview": "",
+      "tier": "auto",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "PD-0001"
+      ]
+    },
+    {
+      "n": 17,
+      "kind": "tool",
+      "title": "propose_dispatch_change",
+      "summary": "Proposal AP-0001 queued: Move L-2231 dispatch 06:15 -> 09:30",
+      "args": {
+        "lot_id": "L-2231",
+        "new_due": "09:30",
+        "reason": "CH4 confirmed excursion; lot on QA hold, due 06:15 (<3h). Delay dispatch until QA assessment and handheld check.",
+        "evidence_ids": [
+          "TT-401",
+          "TT-402",
+          "L-2231"
+        ]
+      },
+      "result_preview": "AP-0001 pending · needs Shift Supervisor",
+      "tier": "approve",
+      "ok": true,
+      "latency_ms": 1,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "AP-0001",
+        "L-2231",
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 18,
+      "kind": "guardrail",
+      "title": "Tier check: dispatch change requires approval",
+      "summary": "Not executed. AP-0001 waits for Shift Supervisor; it expires if any of L-2231, TT-401, TT-402 changes first.",
+      "args": {},
+      "result_preview": "",
+      "tier": "approve",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "AP-0001"
+      ]
+    },
+    {
+      "n": 19,
+      "kind": "tool",
+      "title": "propose_dispatch_change",
+      "summary": "Proposal AP-0002 queued: Move L-2232 dispatch 07:28 -> 10:30",
+      "args": {
+        "lot_id": "L-2232",
+        "new_due": "10:30",
+        "reason": "CH5 confirmed excursion; lot on QA hold, due 07:28 (<3h). Delay dispatch until QA assessment and handheld check.",
+        "evidence_ids": [
+          "TT-501",
+          "TT-502",
+          "L-2232"
+        ]
+      },
+      "result_preview": "AP-0002 pending · needs Shift Supervisor",
+      "tier": "approve",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "AP-0002",
+        "L-2232",
+        "TT-501",
+        "TT-502"
+      ]
+    },
+    {
+      "n": 20,
+      "kind": "guardrail",
+      "title": "Tier check: dispatch change requires approval",
+      "summary": "Not executed. AP-0002 waits for Shift Supervisor; it expires if any of L-2232, TT-501, TT-502 changes first.",
+      "args": {},
+      "result_preview": "",
+      "tier": "approve",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "AP-0002"
+      ]
+    },
+    {
+      "n": 21,
+      "kind": "think",
+      "title": "Model call 3 (limit 8)",
+      "summary": "No new evidence about WO-1042's fault (the TT-401 calibration issue) came out of this, because both CH4 probes agree, so I'm not amending it.",
+      "args": {},
+      "result_preview": "in 10742 tok (8618 cached) · out 609 tok · US$0.0123 · claude-sonnet-5-5",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 5993,
+      "input_tokens": 10742,
+      "output_tokens": 609,
+      "cost_usd": 0.012261,
+      "evidence_ids": []
+    },
+    {
+      "n": 22,
+      "kind": "tool",
+      "title": "write_handover_note",
+      "summary": "Handover accepted (confirmed), 12 citation(s) verified",
+      "args": {
+        "conclusion": "Confirmed real excursion in CH4 and CH5 (both probe pairs agree ~7.4 C) following C2 trip; lots held, repair WO raised.",
+        "confidence": "confirmed",
+        "note_markdown": "**What happened:** C2 tripped ~05:01 (standby offline) [C2]. From 05:05 both CH4 probes [TT-401][TT-402] and both CH5 probes [TT-501][TT-502] rose from 2.1 to ~7.4 C, with probes agreeing within 0.05 C. The excursion is real, not a sensor fault. WO-1042 (TT-401 calibration) [WO-1042] is unrelated and I did not amend it.\n\n**Done:**\n- QA holds: L-2231 [QH-0001], L-2232 [QH-0002].\n- Raised WO-1043 (P1) on C2 [WO-1043].\n- Drafted isolation permit [PD-0001]. A person must authorise it.\n\n**Awaiting Shift Supervisor approval:**\n- [AP-0001] L-2231 dispatch 06:15 to 09:30.\n- [AP-0002] L-2232 dispatch 07:28 to 10:30.\n\n**Next physical checks:**\n- Technician to diagnose the C2 trip and restore cooling.\n- Handheld product temperature checks in CH4 and CH5.\n- QA to assess time above limit (since ~05:05) before any release."
+      },
+      "result_preview": "Confirmed real excursion in CH4 and CH5 (both probe pairs agree ~7.4 C) following C2 trip; lots held, repair WO raised.",
+      "tier": "auto",
+      "ok": true,
+      "latency_ms": 1,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "C2",
+        "TT-401",
+        "TT-402",
+        "TT-501",
+        "TT-502",
+        "WO-1042",
+        "QH-0001",
+        "QH-0002",
+        "WO-1043",
+        "PD-0001",
+        "AP-0001",
+        "AP-0002"
+      ]
+    },
+    {
+      "n": 23,
+      "kind": "guardrail",
+      "title": "Evidence check passed: excursion confirmed",
+      "summary": "TT-401 7.4 °C (fresh) · TT-402 7.4 °C (fresh) · mean gap 0.0 °C over 15 min -> excursion confirmed TT-501 7.5 °C (fresh) · TT-502 7.5 °C (fresh) · mean gap 0.0 °C over 15 min -> excursion confirmed",
+      "args": {},
+      "result_preview": "",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "CH4",
+        "TT-401",
+        "TT-402",
+        "CH5",
+        "TT-501",
+        "TT-502"
+      ]
+    },
+    {
+      "n": 24,
+      "kind": "conclusion",
+      "title": "Confirmed real excursion in CH4 and CH5 (both probe pairs agree ~7.4 C) following C2 trip; lots held, repair WO raised.",
+      "summary": "Confidence: confirmed · 4 automatic action(s) · 2 proposal(s) awaiting approval",
+      "args": {},
+      "result_preview": "",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "AP-0001",
+        "AP-0002",
+        "C2",
+        "CH4",
+        "CH5",
+        "L-2231",
+        "L-2232",
+        "PD-0001",
+        "QH-0001",
+        "QH-0002",
+        "TT-401",
+        "TT-402",
+        "TT-501",
+        "TT-502",
+        "WO-1042",
+        "WO-1043"
+      ]
+    }
+  ],
+  "conclusion": "Confirmed real excursion in CH4 and CH5 (both probe pairs agree ~7.4 C) following C2 trip; lots held, repair WO raised.",
+  "confidence": "confirmed",
+  "handover_note": "**What happened:** C2 tripped ~05:01 (standby offline) [C2]. From 05:05 both CH4 probes [TT-401][TT-402] and both CH5 probes [TT-501][TT-502] rose from 2.1 to ~7.4 C, with probes agreeing within 0.05 C. The excursion is real, not a sensor fault. WO-1042 (TT-401 calibration) [WO-1042] is unrelated and I did not amend it.\n\n**Done:**\n- QA holds: L-2231 [QH-0001], L-2232 [QH-0002].\n- Raised WO-1043 (P1) on C2 [WO-1043].\n- Drafted isolation permit [PD-0001]. A person must authorise it.\n\n**Awaiting Shift Supervisor approval:**\n- [AP-0001] L-2231 dispatch 06:15 to 09:30.\n- [AP-0002] L-2232 dispatch 07:28 to 10:30.\n\n**Next physical checks:**\n- Technician to diagnose the C2 trip and restore cooling.\n- Handheld product temperature checks in CH4 and CH5.\n- QA to assess time above limit (since ~05:05) before any release.\n\n**Checks computed in code (not by the model)**\n- CH4: TT-401 7.4 °C (fresh) · TT-402 7.4 °C (fresh) · mean gap 0.0 °C over 15 min -> excursion confirmed\n- CH5: TT-501 7.5 °C (fresh) · TT-502 7.5 °C (fresh) · mean gap 0.0 °C over 15 min -> excursion confirmed",
+  "approvals": [],
+  "total_cost_usd": 0.041306,
+  "total_tokens": 27124,
+  "duration_ms": 20004,
+  "extra": {
+    "recording_id": "compressor_trip",
+    "recorded": "live",
+    "recorded_at": "2026-11-20T09:26:32+00:00",
+    "description": "Compressor C2 trips with the standby offline; Chillers 4 and 5 warm.",
+    "requires_stale": [],
+    "prompt_version": "345442da9f",
+    "model_turns": [
+      {
+        "think": "I'll check the alarm context, the probe trends, the lots, and the work orders for both chillers and the compressor.",
+        "tool_calls": [
+          {
+            "name": "get_sensor_trend",
+            "input": {
+              "tags": [
+                "TT-401",
+                "TT-402"
+              ],
+              "window_min": 120
+            }
+          },
+          {
+            "name": "get_sensor_trend",
+            "input": {
+              "tags": [
+                "TT-501",
+                "TT-502"
+              ],
+              "window_min": 120
+            }
+          },
+          {
+            "name": "list_lots_in_zone",
+            "input": {
+              "zone_asset_id": "CH4"
+            }
+          },
+          {
+            "name": "list_lots_in_zone",
+            "input": {
+              "zone_asset_id": "CH5"
+            }
+          },
+          {
+            "name": "find_work_orders",
+            "input": {
+              "asset_id": "CH4"
+            }
+          },
+          {
+            "name": "find_work_orders",
+            "input": {
+              "asset_id": "CH5"
+            }
+          },
+          {
+            "name": "find_work_orders",
+            "input": {
+              "asset_id": "C2"
+            }
+          },
+          {
+            "name": "get_asset",
+            "input": {
+              "asset_id": "C2"
+            }
+          },
+          {
+            "name": "read_inbox",
+            "input": {}
+          }
+        ],
+        "usage": {
+          "input_tokens": 4,
+          "output_tokens": 553,
+          "cache_creation_input_tokens": 367,
+          "cache_read_input_tokens": 4908
+        },
+        "latency_ms": 4833,
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "tool_use"
+      },
+      {
+        "think": "Both chillers show a confirmed real excursion with probes in agreement. I'll hold both lots, raise a work order for C2 (none is open), and draft the permit.",
+        "tool_calls": [
+          {
+            "name": "place_qa_hold",
+            "input": {
+              "lot_id": "L-2231",
+              "reason": "CH4 both probes above 5.0 C limit since 05:05 (TT-401 7.41, TT-402 7.36); confirmed excursion after C2 trip.",
+              "evidence_ids": [
+                "TT-401",
+                "TT-402",
+                "L-2231",
+                "C2"
+              ]
+            }
+          },
+          {
+            "name": "place_qa_hold",
+            "input": {
+              "lot_id": "L-2232",
+              "reason": "CH5 both probes above 5.0 C limit since 05:05 (TT-501 7.45, TT-502 7.45); confirmed excursion after C2 trip.",
+              "evidence_ids": [
+                "TT-501",
+                "TT-502",
+                "L-2232",
+                "C2"
+              ]
+            }
+          },
+          {
+            "name": "create_work_order",
+            "input": {
+              "asset_id": "C2",
+              "title": "C2 tripped 05:01 - standby offline, CH4/CH5 above limit",
+              "priority": 1,
+              "note": "C2 tripped (running=false) at ~05:01, alarm AL-0001. CH4 (TT-401/402 ~7.4 C) and CH5 (TT-501/502 ~7.5 C) both probe pairs agree above 5.0 C since 05:05. Suction 9.49 C, discharge 12.35 C. Diagnose trip cause and restore cooling."
+            }
+          },
+          {
+            "name": "draft_isolation_permit",
+            "input": {
+              "asset_id": "C2",
+              "work_description": "Investigate and repair tripped Compressor 2 (AL-0001); restore refrigeration to CH4/CH5.",
+              "isolations": [
+                "Electrical isolation and lock-out of C2 motor starter",
+                "Close suction and discharge isolation valves on C2",
+                "Verify zero energy and depressurise C2 before opening"
+              ],
+              "hazards": [
+                "Refrigerant release",
+                "Stored electrical energy",
+                "Hot discharge surfaces",
+                "Pressurised system"
+              ]
+            }
+          },
+          {
+            "name": "propose_dispatch_change",
+            "input": {
+              "lot_id": "L-2231",
+              "new_due": "09:30",
+              "reason": "CH4 confirmed excursion; lot on QA hold, due 06:15 (<3h). Delay dispatch until QA assessment and handheld check.",
+              "evidence_ids": [
+                "TT-401",
+                "TT-402",
+                "L-2231"
+              ]
+            }
+          },
+          {
+            "name": "propose_dispatch_change",
+            "input": {
+              "lot_id": "L-2232",
+              "new_due": "10:30",
+              "reason": "CH5 confirmed excursion; lot on QA hold, due 07:28 (<3h). Delay dispatch until QA assessment and handheld check.",
+              "evidence_ids": [
+                "TT-501",
+                "TT-502",
+                "L-2232"
+              ]
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 2,
+          "output_tokens": 1321,
+          "cache_creation_input_tokens": 3343,
+          "cache_read_input_tokens": 5275
+        },
+        "latency_ms": 9159,
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "tool_use"
+      },
+      {
+        "think": "No new evidence about WO-1042's fault (the TT-401 calibration issue) came out of this, because both CH4 probes agree, so I'm not amending it.",
+        "tool_calls": [
+          {
+            "name": "write_handover_note",
+            "input": {
+              "conclusion": "Confirmed real excursion in CH4 and CH5 (both probe pairs agree ~7.4 C) following C2 trip; lots held, repair WO raised.",
+              "confidence": "confirmed",
+              "note_markdown": "**What happened:** C2 tripped ~05:01 (standby offline) [C2]. From 05:05 both CH4 probes [TT-401][TT-402] and both CH5 probes [TT-501][TT-502] rose from 2.1 to ~7.4 C, with probes agreeing within 0.05 C. The excursion is real, not a sensor fault. WO-1042 (TT-401 calibration) [WO-1042] is unrelated and I did not amend it.\n\n**Done:**\n- QA holds: L-2231 [{{hold:L-2231}}], L-2232 [{{hold:L-2232}}].\n- Raised {{wo_created:C2}} (P1) on C2 [{{wo_created:C2}}].\n- Drafted isolation permit [{{permit:C2}}]. A person must authorise it.\n\n**Awaiting Shift Supervisor approval:**\n- [{{approval:change_dispatch:L-2231}}] L-2231 dispatch 06:15 to 09:30.\n- [{{approval:change_dispatch:L-2232}}] L-2232 dispatch 07:28 to 10:30.\n\n**Next physical checks:**\n- Technician to diagnose the C2 trip and restore cooling.\n- Handheld product temperature checks in CH4 and CH5.\n- QA to assess time above limit (since ~05:05) before any release."
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 2,
+          "output_tokens": 609,
+          "cache_creation_input_tokens": 2122,
+          "cache_read_input_tokens": 8618
+        },
+        "latency_ms": 5993,
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "tool_use"
+      }
+    ],
+    "evidence": [
+      {
+        "asset_id": "CH4",
+        "asset_name": "Chiller 4",
+        "primary": "TT-401",
+        "reference": "TT-402",
+        "probes": [
+          {
+            "tag": "TT-401",
+            "description": "Chiller 4 air (primary)",
+            "latest_c": 7.41,
+            "latest_ts": "2026-11-21T05:20:00+08:00",
+            "quality": "good",
+            "age_min": 0.0,
+            "start_c": 2.07,
+            "peak_c": 7.45,
+            "peak_ts": "2026-11-21T05:17:00+08:00"
+          },
+          {
+            "tag": "TT-402",
+            "description": "Chiller 4 air (independent)",
+            "latest_c": 7.36,
+            "latest_ts": "2026-11-21T05:20:00+08:00",
+            "quality": "good",
+            "age_min": 0.0,
+            "start_c": 2.15,
+            "peak_c": 7.44,
+            "peak_ts": "2026-11-21T05:15:00+08:00"
+          }
+        ],
+        "mean_gap_c": 0.04666666666666662,
+        "diverging": false,
+        "verdict": "excursion_confirmed",
+        "headline": "Confirmed excursion - both Chiller 4 probes above 5.0 °C.",
+        "recommendation": "Keep product on hold until QA has assessed the time above limit."
+      },
+      {
+        "asset_id": "CH5",
+        "asset_name": "Chiller 5",
+        "primary": "TT-501",
+        "reference": "TT-502",
+        "probes": [
+          {
+            "tag": "TT-501",
+            "description": "Chiller 5 air (primary)",
+            "latest_c": 7.45,
+            "latest_ts": "2026-11-21T05:20:00+08:00",
+            "quality": "good",
+            "age_min": 0.0,
+            "start_c": 2.07,
+            "peak_c": 7.45,
+            "peak_ts": "2026-11-21T05:19:00+08:00"
+          },
+          {
+            "tag": "TT-502",
+            "description": "Chiller 5 air (independent)",
+            "latest_c": 7.45,
+            "latest_ts": "2026-11-21T05:20:00+08:00",
+            "quality": "good",
+            "age_min": 0.0,
+            "start_c": 2.12,
+            "peak_c": 7.45,
+            "peak_ts": "2026-11-21T05:20:00+08:00"
+          }
+        ],
+        "mean_gap_c": 0.03400000000000016,
+        "diverging": false,
+        "verdict": "excursion_confirmed",
+        "headline": "Confirmed excursion - both Chiller 5 probes above 5.0 °C.",
+        "recommendation": "Keep product on hold until QA has assessed the time above limit."
+      }
+    ],
+    "gate": {
+      "model_conclusion": "Confirmed real excursion in CH4 and CH5 (both probe pairs agree ~7.4 C) following C2 trip; lots held, repair WO raised.",
+      "model_confidence": "confirmed",
+      "cap": "confirmed",
+      "rewritten": false
+    }
+  }
+}

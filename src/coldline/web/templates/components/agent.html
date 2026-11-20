@@ -1,0 +1,158 @@
+{#- Agent components: step card, conclusion callout, approval card, agent panel.
+    Import with: {% import "components/agent.html" as ag %} -#}
+{% from "components/icons.html" import icon %}
+{% import "components/ui.html" as ui %}
+
+{#- One agent step (TraceStep). The SSE stream can send exactly this fragment per step. -#}
+{% macro step_card(s, running=False, enter=False, show_meta=False) -%}
+{% set blocked = not s.ok %}
+<li class="step step--{{ s.kind }}{% if blocked %} step--blocked{% endif %}{% if running %} step--running{% endif %}{% if enter %} step-enter{% endif %}" id="step-{{ s.n }}">
+  <span class="step-n" aria-hidden="true">{{ s.n }}</span>
+  <div class="step-head">
+    <div class="step-title">
+      {% if s.kind == StepKind.TOOL %}<span class="sr-only">Tool call: </span>{{ s.summary or s.title }}
+      {% elif s.kind == StepKind.CONCLUSION %}{{ s.title }}
+      {% else %}{{ s.title }}{% endif %}
+    </div>
+    <div class="step-state">
+      {{ ui.tier(s.tier) }}
+      {% if running %}<span class="pending">{{ icon('clock', label='running') }}</span>
+      {% elif blocked %}<span class="blocked">{{ icon('shield-x', label='blocked') }}</span>
+      {% elif s.kind == StepKind.GUARDRAIL %}<span class="ok" style="color: var(--accent)">{{ icon('shield-check', label='guardrail passed') }}</span>
+      {% else %}<span class="ok">{{ icon('check', label='done') }}</span>{% endif %}
+    </div>
+  </div>
+  {% if s.kind == StepKind.TOOL %}
+    <div class="step-call"><span class="fn">{{ s.title }}</span>{{ call_sig('', s.args) }}</div>
+  {% elif s.kind != StepKind.CONCLUSION and s.summary %}
+    <p class="step-summary">{{ s.summary }}</p>
+  {% endif %}
+  {% if s.result_preview and s.kind != StepKind.CONCLUSION %}<div class="obs">{{ s.result_preview }}</div>{% endif %}
+  {% if show_meta %}
+  <div class="step-meta"><span>{{ s.latency_ms|ms }}</span>{% if s.input_tokens %}<span>{{ (s.input_tokens + s.output_tokens)|num }} tok</span><span>{{ s.cost_usd|usd }}</span>{% endif %}</div>
+  {% endif %}
+</li>
+{%- endmacro %}
+
+{#- Conclusion callout -#}
+{% macro conclusion(text, confidence="unconfirmed", label="Conclusion") -%}
+{% set c = CONFIDENCE.get(confidence, ("", "amber")) %}
+<div class="conclusion conclusion--{{ c[1] }}" role="status">
+  {{ icon('alert' if c[1] != 'neutral' else 'check-circle') }}
+  <div class="conclusion-label">{{ label }}{% if c[0] %} · {{ c[0] }}{% endif %}</div>
+  <div class="conclusion-text">{{ text }}</div>
+</div>
+{%- endmacro %}
+
+{#- Approval card. prefix keeps preview links inside /preview. -#}
+{% macro approval_card(a, compact=False, prefix="", now=None) -%}
+<article class="approval approval--{{ a.status }}{% if compact %} approval--compact{% endif %}" id="approval-{{ a.id }}">
+  <div class="approval-head">
+    <div class="approval-title">{{ a.title }}</div>
+    {{ ui.status_badge(a.status) }}
+  </div>
+  <div class="approval-meta">
+    <span>{{ a.id }}</span><span>{{ a.action }}</span><span>tier APPROVE</span>
+    <a href="{{ prefix }}/runs/{{ a.run_id }}">{{ a.run_id }}</a>
+  </div>
+  {% if not compact %}<p class="approval-rationale">{{ a.rationale }}</p>{% endif %}
+  {% if a.evidence_ids %}<div>{{ ui.ev_list(a.evidence_ids) }}</div>{% endif %}
+  {% if not compact %}
+  <div class="approval-payload">{% for k, v in a.payload.items() %}{{ k }}: {{ v }}
+{% endfor %}{% if a.source_versions %}<span style="color: var(--text-4)">binds to: {% for k, v in a.source_versions.items() %}{{ k }} v{{ v }}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}</div>
+  {% endif %}
+  {% if a.status == ApprovalStatus.PENDING %}
+  <div class="approval-actions">
+    <button class="btn btn--approve{% if compact %} btn--sm{% endif %}" type="button"
+            hx-post="/approvals/{{ a.id }}/approve" hx-target="#approval-{{ a.id }}" hx-swap="outerHTML"
+            hx-vals='{"idempotency_key": "{{ a.idempotency_key }}"}'>{{ icon('check') }}<span>Approve</span><span class="spinner htmx-indicator"></span></button>
+    <button class="btn btn--decline{% if compact %} btn--sm{% endif %}" type="button"
+            hx-post="/approvals/{{ a.id }}/decline" hx-target="#approval-{{ a.id }}" hx-swap="outerHTML">{{ icon('x') }}<span>Decline</span></button>
+    {% if not compact %}<span class="fine" title="Idempotency key">{{ a.idempotency_key }}</span>{% endif %}
+  </div>
+  {% elif a.status == ApprovalStatus.EXPIRED %}
+  <div class="approval-expired-note">{{ icon('clock') }}<span>Expired: source data changed since this was proposed. Nothing was executed.</span></div>
+  {% else %}
+  <div class="approval-decision">{{ icon('user', 'icon-sm') }}<span>{{ a.status|humanize }} by <b class="strong">{{ a.decided_by or "—" }}</b>{% if a.decided_at %} at <span class="mono">{{ a.decided_at|hhmmss }}</span>{% endif %}</span></div>
+  {% endif %}
+</article>
+{%- endmacro %}
+
+{#- Agent panel (overview right column). Regions: #agent-panel, #agent-steps, #agent-conclusion, #agent-approvals -#}
+{% macro agent_panel(run, approvals=[], prefix="", expired=[], role="") -%}
+<section class="panel agent-panel" id="agent-panel" aria-labelledby="agent-h"
+  {% if run and run.status == RunStatus.RUNNING %}hx-ext="sse" sse-connect="/runs/{{ run.run_id }}/stream" sse-close="done"{% endif %}>
+  <header class="panel-head">
+    <h2 class="panel-title" id="agent-h">Agent</h2>
+    {% if run %}{{ ui.mode_badge(run.mode) }}{% endif %}
+    {% if not run %}
+      <div class="agent-status"><span class="dot"></span>Idle · watching alarms</div>
+    {% elif run.status == RunStatus.RUNNING %}
+      <div class="agent-status agent-status--running" aria-live="polite"><span class="dot"></span>Running · Investigating {{ run.extra.get('asset_id', 'alarm')|replace('CH', 'Chiller ') }}</div>
+    {% elif run.status == RunStatus.AWAITING_APPROVAL %}
+      <div class="agent-status agent-status--attention"><span class="dot"></span>Awaiting approval · {{ approvals|selectattr('status', 'equalto', ApprovalStatus.PENDING)|list|length }} pending</div>
+    {% else %}
+      <div class="agent-status"><span class="dot"></span>{{ run.status|humanize }}</div>
+    {% endif %}
+  </header>
+  <div class="agent-scroll">
+    {% if not run %}
+      {% call ui.empty("No investigation running", icon_name="sparkle") %}<p>Inject a fault to watch the agent investigate. It reads plant data, checks business systems, and asks before doing anything consequential.</p>{% endcall %}
+    {% else %}
+      <ol class="steps" id="agent-steps" {% if run.status == RunStatus.RUNNING %}sse-swap="step" hx-swap="beforeend"{% endif %}>
+        {% for s in run.steps %}{{ step_card(s) }}{% endfor %}
+      </ol>
+      {% if run.status == RunStatus.RUNNING %}
+        <div id="agent-thinking">{{ ui.loading("Agent is working…", 2) }}</div>
+      {% endif %}
+      <div id="agent-conclusion" {% if run.status == RunStatus.RUNNING %}sse-swap="conclusion"{% endif %}>
+        {% if run.conclusion %}{{ conclusion(run.conclusion, run.confidence) }}{% endif %}
+      </div>
+      <div id="agent-approvals" class="stack-sm" {% if run.status == RunStatus.RUNNING %}sse-swap="approval" hx-swap="beforeend"{% endif %}>
+        {% set pending = approvals|selectattr('status', 'equalto', ApprovalStatus.PENDING)|list %}
+        {% if pending %}<div class="section-label">Needs your decision</div>
+          {% if role %}<p class="muted small" style="margin: 0">Deciding as <b class="strong">{{ role }}</b> · <a href="{{ prefix }}/approvals">switch role</a></p>{% endif %}
+        {% endif %}
+        {% for a in pending %}{{ approval_card(a, compact=True, prefix=prefix) }}{% endfor %}
+        {% if expired %}<div class="section-label">Expired: evidence changed</div>{% endif %}
+        {% for a in expired %}{{ approval_card(a, compact=True, prefix=prefix) }}{% endfor %}
+      </div>
+    {% endif %}
+  </div>
+  {% if run %}
+  <footer class="panel-foot">
+    <div class="agent-totals"><span><b>{{ run.steps|length }}</b> steps</span><span><b>{{ run.total_tokens|num }}</b> tok</span><span><b>{{ run.total_cost_usd|usd }}</b></span><span><b>{{ run.duration_ms|ms }}</b></span></div>
+    <a class="spacer right" href="{{ prefix }}/runs/{{ run.run_id }}">Open trace {{ run.run_id }} →</a>
+  </footer>
+  {% endif %}
+</section>
+{%- endmacro %}
+
+{#- One row of the run-page timeline. offset/total (ms) place the latency bar. -#}
+{% macro timeline_step(s, offset=0, total=1) -%}
+{% set blocked = not s.ok %}
+{% set node = 'blocked' if blocked else s.kind %}
+<li class="tl" id="step-{{ s.n }}">
+  <div class="tl-time">+{{ (offset / 1000)|round(1) }} s</div>
+  <div class="tl-node tl-node--{{ node }}" aria-hidden="true">
+    {{ icon({'tool': 'wrench', 'think': 'sparkle', 'guardrail': 'shield-check', 'blocked': 'shield-x', 'conclusion': 'flask', 'error': 'x'}.get(node, 'wrench')) }}
+  </div>
+  <div class="tl-body">
+    <div class="tl-card tl-card--{{ 'blocked' if blocked and s.kind == 'guardrail' else s.kind }}">
+      <div class="tl-head">
+        <span class="tl-kind">{{ s.n }} · {{ s.kind }}</span>
+        <span class="tl-title{% if s.kind != 'tool' %} tl-title--text{% endif %}">{{ s.title }}</span>
+        {{ ui.tier(s.tier) }}
+        {% if blocked %}{{ ui.badge('Blocked' if s.kind == 'guardrail' else 'Failed', 'red') }}{% endif %}
+        <span class="tl-metrics"><span><b>{{ s.latency_ms|ms }}</b></span>{% if s.input_tokens %}<span>in <b>{{ s.input_tokens|num }}</b></span><span>out <b>{{ s.output_tokens|num }}</b></span><span><b>{{ s.cost_usd|usd }}</b></span>{% endif %}</span>
+      </div>
+      {% if s.summary and s.kind != 'conclusion' %}<p class="step-summary">{{ s.summary }}</p>{% endif %}
+      {% if s.kind == 'conclusion' %}<p class="step-summary strong">{{ s.summary }}</p>{% endif %}
+      {% if s.args %}<div class="args">{% for k, v in s.args.items() %}<span class="k">{{ k }}=</span>{{ v|tojson if v is not string else '"' ~ v ~ '"' }}{% if not loop.last %}{{ "\n" }}{% endif %}{% endfor %}</div>{% endif %}
+      {% if s.result_preview %}<div class="obs">{{ s.result_preview }}</div>{% endif %}
+      {% if s.evidence_ids %}<div style="margin-top: 8px">{{ ui.ev_list(s.evidence_ids) }}</div>{% endif %}
+      <div class="waterfall" title="{{ s.latency_ms|ms }} of {{ total|ms }}"><span style="left: {{ (offset / (total or 1) * 100)|round(2) }}%; width: {{ (s.latency_ms / (total or 1) * 100)|round(2) }}%"></span></div>
+    </div>
+  </div>
+</li>
+{%- endmacro %}

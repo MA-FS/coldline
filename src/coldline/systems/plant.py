@@ -100,9 +100,12 @@ class Sandbox:
 
     @_locked
     def advance_wall_time(self, cap_seconds: float = 60.0) -> None:
-        """Advance one sim second per elapsed wall second, discarding excess idle time."""
+        """Advance one sim second per elapsed wall second, discarding excess idle time.
+
+        Called on every web request, so it is not audited: the clock moving is not a write.
+        """
         wall = self._clock()
-        self.tick(min(wall - self._wall, cap_seconds))
+        self._sim.tick(max(0.0, min(wall - self._wall, cap_seconds)))
         self._wall = wall
 
     @_locked
@@ -192,6 +195,7 @@ class Sandbox:
         )
         self._holds.append(hold)
         lot.status = LotStatus.HOLD
+        lot.version += 1
         self._record("place_qa_hold", lot_id, actor, reason, evidence_ids)
         return hold.model_copy(deep=True)
 
@@ -205,6 +209,7 @@ class Sandbox:
             raise ValueError(f"No active hold on {lot_id}")
         hold.active = False
         self._lots[lot_id].status = LotStatus.READY
+        self._lots[lot_id].version += 1
         self._record("release_qa_hold", lot_id, actor, evidence=[hold.id])
         return hold.model_copy(deep=True)
 
@@ -214,6 +219,7 @@ class Sandbox:
         lot = self._lots[lot_id]
         old = lot.dispatch_due
         lot.dispatch_due = new_due
+        lot.version += 1
         self._record("change_dispatch", lot_id, actor, f"{old} -> {new_due}: {reason}")
         return self.get_lot(lot_id)
 

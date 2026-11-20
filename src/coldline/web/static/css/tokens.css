@@ -1,0 +1,135 @@
+/* ColdLine design tokens.
+ * ISA-101 high-performance HMI: greys for normal, colour ONLY for abnormal (amber, red).
+ * Green is reserved for "done/ok" confirmation marks and used sparingly. Blue is the interactive accent.
+ * Dark is the default; [data-theme=light] is an optional light (classic ISA grey) theme.
+ */
+:root {
+  color-scheme: dark;
+
+  /* surfaces: 0 = page, 1 = panel, 2 = raised / header, 3 = hover / selected */
+  --bg-0: #15181c;
+  --bg-1: #1b1f24;
+  --bg-2: #22272d;
+  --bg-3: #2b3138;
+  --bg-inset: #121519;
+  --bg-banner: #0e1013;
+
+  /* lines */
+  --line: #353c44;
+  --line-soft: #2a3037;
+  --line-strong: #4e5761;
+
+  /* text */
+  --text-1: #e8ebee;  /* primary values */
+  --text-2: #b6bdc5;  /* labels, body */
+  --text-3: #8a939d;  /* secondary, units, axes */
+  --text-4: #626b75;  /* disabled, stale */
+
+  /* process (normal state) */
+  --proc: #9aa3ac;         /* equipment outlines, pipes */
+  --proc-dim: #5c656e;     /* standby / inactive */
+  --proc-fill: #20252b;
+
+  /* abnormal */
+  --amber: #f2b705;
+  --amber-ink: #1a1400;    /* text on amber */
+  --amber-weak: rgba(242, 183, 5, 0.12);
+  --amber-line: rgba(242, 183, 5, 0.55);
+  --red: #ef4d4d;
+  --red-ink: #ffffff;
+  --red-weak: rgba(239, 77, 77, 0.12);
+  --red-line: rgba(239, 77, 77, 0.6);
+
+  /* confirmation (sparingly) */
+  --ok: #4cc27a;
+  --ok-weak: rgba(76, 194, 122, 0.12);
+
+  /* interactive accent */
+  --accent: #6ea8fe;
+  --accent-strong: #3d84f0;
+  --accent-ink: #0b1220;
+  --accent-weak: rgba(110, 168, 254, 0.12);
+  --focus: 0 0 0 2px var(--bg-0), 0 0 0 4px #8bb9ff;
+
+  /* stale */
+  --stale: #6b7480;
+  --stale-hatch: repeating-linear-gradient(135deg, transparent 0 4px, rgba(138, 147, 157, 0.12) 4px 5px);
+
+  /* type */
+  --font-ui: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 34px;
+  --lh-tight: 1.2;
+  --lh: 1.5;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --track-caps: 0.08em;
+
+  /* space (4px grid) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+
+  /* shape */
+  --r-1: 3px;
+  --r-2: 5px;
+  --r-3: 8px;
+  --r-pill: 999px;
+  --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--line);
+
+  /* layout */
+  --topbar-h: 64px;
+  --banner-h: 28px;
+  --gutter: 20px;
+  --agent-w: 440px;
+  --detail-w: 340px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-0: #d9dcdf;
+  --bg-1: #e6e8ea;
+  --bg-2: #eef0f1;
+  --bg-3: #f6f7f8;
+  --bg-inset: #f3f4f5;
+  --bg-banner: #c9cdd1;
+  --line: #b4bac0;
+  --line-soft: #c9ced3;
+  --line-strong: #8f979f;
+  --text-1: #15191d;
+  --text-2: #353c43;
+  --text-3: #5b636b;
+  --text-4: #868e96;
+  --proc: #5f676f;
+  --proc-dim: #9aa1a8;
+  --proc-fill: #eceef0;
+  --amber: #c99400;
+  --amber-ink: #1a1400;
+  --amber-weak: rgba(201, 148, 0, 0.14);
+  --amber-line: rgba(176, 128, 0, 0.7);
+  --red: #c8262b;
+  --red-weak: rgba(200, 38, 43, 0.1);
+  --red-line: rgba(200, 38, 43, 0.6);
+  --ok: #1f8a4c;
+  --ok-weak: rgba(31, 138, 76, 0.12);
+  --accent: #1f5fbf;
+  --accent-strong: #1f5fbf;
+  --accent-ink: #ffffff;
+  --accent-weak: rgba(31, 95, 191, 0.1);
+  --focus: 0 0 0 2px var(--bg-1), 0 0 0 4px #1f5fbf;
+  --stale: #868e96;
+  --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.18), 0 0 0 1px var(--line);
+}

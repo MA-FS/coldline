@@ -1,0 +1,41 @@
+{#- Scenario evals. Context: base_context(...) + evals: list of
+    {scenario, case, checks: [{name, passed}], passed, cost_usd, latency_ms, run_id, note} -#}
+{% extends "base.html" %}
+{% from "components/icons.html" import icon %}
+{% import "components/ui.html" as ui %}
+{% block content %}
+{% set P = href_prefix or "" %}
+{% set passed = evals|selectattr('passed')|list|length %}
+{% set checks = evals|map(attribute='checks')|sum(start=[]) %}
+{% set checks_ok = checks|selectattr('passed')|list|length %}
+<div class="page-head">
+  <div>
+    <h1>Evals</h1>
+    <p class="lede">Each scenario is replayed against the agent and scored by deterministic checks in code, not by another model. A failing case stays visible until it is fixed.</p>
+  </div>
+</div>
+<div class="grid-auto" style="margin-bottom: var(--s-4)">
+  {{ ui.kpi("Cases passing", passed ~ " / " ~ evals|length, tone="" if passed == evals|length else "red", kind="measured") }}
+  {{ ui.kpi("Checks passing", checks_ok ~ " / " ~ checks|length, kind="measured") }}
+  {{ ui.kpi("Median cost per case", (evals|map(attribute='cost_usd')|sort|list)[evals|length // 2]|usd(3) if evals else '—', kind="measured") }}
+  {{ ui.kpi("Median latency", ((evals|map(attribute='latency_ms')|sort|list)[evals|length // 2])|ms if evals else '—', kind="measured") }}
+</div>
+{% call ui.panel("Scenario results", id="evals", count=evals|length, body_cls="table-wrap") %}
+<table class="table">
+  <thead><tr><th>Scenario</th><th>Case</th><th>Result</th><th>Checks</th><th class="num">Cost</th><th class="num">Latency</th><th>Run</th></tr></thead>
+  <tbody>
+  {% for e in evals %}
+    <tr>
+      <td class="nowrap">{{ SCENARIO_LABELS[e.scenario][0] if e.scenario else '—' }}</td>
+      <td>{{ e.case }}{% if e.note %}<div class="muted small" style="margin-top: 3px">{{ e.note }}</div>{% endif %}</td>
+      <td>{% if e.passed %}<span class="result result--pass">{{ icon('check-circle') }}Pass</span>{% else %}<span class="result result--fail">{{ icon('x-circle') }}Fail</span>{% endif %}</td>
+      <td>{% for c in e.checks %}<span class="check check--{{ 'pass' if c.passed else 'fail' }}"{% if c.detail %} title="{{ c.detail }}"{% endif %}>{{ icon('check' if c.passed else 'x') }}{{ c.name }}</span>{% endfor %}</td>
+      <td class="num">{{ e.cost_usd|usd(3) }}</td>
+      <td class="num">{{ e.latency_ms|ms }}</td>
+      <td class="mono">{% if e.run_id %}<a href="{{ P }}/runs/{{ e.run_id }}">{{ e.run_id }}</a>{% else %}<span class="muted">{{ e.category|default('—') }}</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endcall %}
+{% endblock %}

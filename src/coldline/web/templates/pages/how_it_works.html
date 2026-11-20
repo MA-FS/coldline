@@ -1,0 +1,125 @@
+{#- How it works: plain-English explanation + architecture diagram. Context: base_context(...) -#}
+{% extends "base.html" %}
+{% from "components/icons.html" import icon %}
+{% import "components/ui.html" as ui %}
+{% macro arrow_defs() -%}
+<defs>
+  <marker id="a-arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="a-head"/></marker>
+  <marker id="a-arr-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="a-head--accent"/></marker>
+  <marker id="a-arr-dim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--text-4)"/></marker>
+</defs>
+{%- endmacro %}
+{% block content %}
+{% set P = href_prefix or "" %}
+<div class="page-head">
+  <div>
+    <h1>How it works</h1>
+    <p class="lede">ColdLine is an AI agent that investigates plant alarms the way a good shift engineer would: it reads the data, checks the business systems, says what the evidence does and doesn't support, and asks a person before doing anything that matters.</p>
+  </div>
+</div>
+
+{% call ui.panel("Architecture", id="architecture", meta="Reads OT, acts on IT, never writes to control") %}
+<svg class="arch" viewBox="0 0 1100 500" role="img" aria-labelledby="arch-t arch-d">
+  <title id="arch-t">ColdLine architecture</title>
+  <desc id="arch-d">The agent reads the plant historian and alarms (read only). It acts on business systems through typed tools with tiers: read, auto, approve. Approve-tier actions wait for a shift supervisor. Plant control has no write path at all. Every step is written to an append-only audit log.</desc>
+  {{ arrow_defs() }}
+  {# OT zone #}
+  <rect x="10" y="30" width="270" height="460" rx="6" class="a-zone"/>
+  <text x="26" y="54" class="a-zone-label">OT · PLANT FLOOR</text>
+  <rect x="30" y="74" width="230" height="64" rx="4" class="a-box a-box--ot"/>
+  <text x="46" y="100" class="a-title">Historian</text>
+  <text x="46" y="120" class="a-mono">TT-401, TT-402, … 1-min samples</text>
+  <rect x="30" y="158" width="230" height="64" rx="4" class="a-box a-box--ot"/>
+  <text x="46" y="184" class="a-title">Alarm system</text>
+  <text x="46" y="204" class="a-sub">ISA-18.2 priorities</text>
+  <rect x="30" y="372" width="230" height="88" rx="4" class="a-box a-box--never"/>
+  <text x="46" y="400" class="a-title">PLC / refrigeration control</text>
+  <text x="46" y="420" class="a-sub">Setpoints, compressors, valves</text>
+  <text x="46" y="442" class="a-tier a-tier--never">NO WRITE API EXISTS</text>
+
+  {# guardrails + agent #}
+  <rect x="385" y="54" width="310" height="70" rx="4" class="a-box"/>
+  <text x="401" y="80" class="a-title">Guardrails, enforced in code</text>
+  <text x="401" y="101" class="a-sub">tier check · data freshness · untrusted text</text>
+  <text x="401" y="117" class="a-sub">step, token and daily cost caps</text>
+  <path d="M540,124 V148" class="a-line" marker-end="url(#a-arr)"/>
+  <rect x="385" y="150" width="310" height="140" rx="4" class="a-box a-box--agent"/>
+  <text x="401" y="178" class="a-title" style="font-size: 16px">ColdLine agent</text>
+  <text x="401" y="199" class="a-sub">Python tool-use loop, no framework</text>
+  <text x="401" y="224" class="a-mono">get_sensor_trend · list_lots</text>
+  <text x="401" y="241" class="a-mono">find_work_orders · place_qa_hold</text>
+  <text x="401" y="258" class="a-mono">change_dispatch · draft_permit …</text>
+  <text x="401" y="279" class="a-sub">Traces every step: tokens, cost, latency</text>
+
+  {# OT -> agent (read) #}
+  <path d="M260,106 C330,106 320,196 383,196" class="a-line" marker-end="url(#a-arr)"/>
+  <path d="M260,190 C320,190 330,226 383,226" class="a-line" marker-end="url(#a-arr)"/>
+  <text x="292" y="256" class="a-tier a-tier--read">READ ONLY</text>
+  {# agent -> control: never #}
+  <path d="M385,270 C320,270 330,416 262,416" class="a-line a-line--red"/>
+  <g transform="translate(330 352)"><circle r="11" style="fill: var(--bg-1); stroke: var(--red)"/><path d="M-5,-5 L5,5 M5,-5 L-5,5" style="stroke: var(--red); stroke-width: 2"/></g>
+  <text x="346" y="330" class="a-tier a-tier--never">NEVER</text>
+
+  {# human + audit #}
+  <path d="M540,290 V364" class="a-line a-line--accent" marker-end="url(#a-arr-accent)"/>
+  <text x="550" y="332" class="a-tier a-tier--approve">APPROVE-TIER PROPOSALS</text>
+  <rect x="385" y="366" width="310" height="56" rx="4" class="a-box a-box--human"/>
+  <text x="401" y="390" class="a-title">Shift supervisor decides</text>
+  <text x="401" y="410" class="a-sub">Approve executes once · decline executes nothing</text>
+  <path d="M540,422 V440" class="a-line a-line--dim" marker-end="url(#a-arr-dim)"/>
+  <rect x="385" y="442" width="310" height="40" rx="4" class="a-box"/>
+  <text x="401" y="467" class="a-title" style="font-size: 13px">Audit log</text>
+  <text x="680" y="467" text-anchor="end" class="a-sub">append-only · every write</text>
+
+  {# IT zone #}
+  <rect x="820" y="30" width="270" height="460" rx="6" class="a-zone"/>
+  <text x="836" y="54" class="a-zone-label">IT · BUSINESS SYSTEMS</text>
+  {% set it = [
+    ("QA holds & lots", "place_qa_hold", "auto", 74),
+    ("Dispatch schedule", "change_dispatch", "approve", 146),
+    ("CMMS work orders", "create · amend", "approve", 218),
+    ("Permit to work", "draft_permit (draft only)", "auto", 290),
+    ("Inbox & tickets", "untrusted text, read as data", "read", 362),
+  ] %}
+  {% for title, sub, tier, y in it %}
+    <rect x="840" y="{{ y }}" width="230" height="56" rx="4" class="a-box"{% if tier == 'read' %} style="stroke-dasharray: 5 4"{% endif %}/>
+    <text x="856" y="{{ y + 24 }}" class="a-title">{{ title }}</text>
+    <text x="856" y="{{ y + 43 }}" class="a-mono">{{ sub }}</text>
+    {% set cy = y + 28 %}
+    {% if tier == 'read' %}
+      <path d="M838,{{ cy }} C760,{{ cy }} 760,262 697,262" class="a-line a-line--dim" marker-end="url(#a-arr-dim)"/>
+    {% else %}
+      <path d="M695,{{ 200 + loop.index0 * 12 }} C760,{{ 200 + loop.index0 * 12 }} 760,{{ cy }} 838,{{ cy }}" class="a-line{% if tier == 'approve' %} a-line--accent{% endif %}" marker-end="url({% if tier == 'approve' %}#a-arr-accent{% else %}#a-arr{% endif %})"/>
+    {% endif %}
+    <text x="828" y="{{ cy + 18 if tier == 'read' else cy - 8 }}" text-anchor="end" class="a-tier a-tier--{{ tier }}">{{ tier|upper }}</text>
+  {% endfor %}
+</svg>
+{% endcall %}
+
+<div class="explain" style="margin-top: var(--s-4)">
+  {% for ic, title, text in [
+    ("shield", "Reads OT, acts on IT, never writes to control", "The agent can read plant data. It can change business records such as QA holds and work orders. There is no code path from the agent to setpoints, compressors or valves: the tool doesn't exist, so no prompt can call it."),
+    ("lock", "Four action tiers", "Every tool has a tier: READ has no side effects, AUTO is low-risk and always audited, APPROVE waits for a person, NEVER is refused. Tiers are checked in Python before a tool runs, not left to the model."),
+    ("flask", "Evidence before conclusions", "The agent must say what the data does and does not support. With two probes disagreeing it reports “cause unconfirmed” and holds the product rather than guessing a diagnosis."),
+    ("clock", "Fresh data or no comparison", "Freshness and divergence are computed in code. If a probe goes stale, the comparison is withdrawn and any approval that relied on it expires instead of executing."),
+    ("mail", "Untrusted text stays data", "Emails and ticket notes are delimited and labelled as untrusted. An email saying “release all QA holds” is flagged, not obeyed, and can never unlock a higher tier."),
+    ("chart", "Traced, costed, replayable", "Every step records tokens, latency and cost. The public demo replays recorded runs by default; live runs are opt-in and capped per visitor and per day."),
+  ] %}
+  <div class="panel"><div class="panel-body"><h3>{{ icon(ic) }}{{ title }}</h3><p>{{ text }}</p></div></div>
+  {% endfor %}
+</div>
+
+<div style="margin-top: var(--s-4)">
+{% call ui.panel("Action tiers", id="tiers", body_cls="table-wrap") %}
+<table class="table tier-table">
+  <thead><tr><th>Tier</th><th>What it means</th><th>Examples</th></tr></thead>
+  <tbody>
+    <tr><td>{{ ui.tier(Tier.READ) }}</td><td>No side effects. Runs freely.</td><td class="mono small">get_sensor_trend, list_lots, find_work_orders, read_inbox</td></tr>
+    <tr><td>{{ ui.tier(Tier.AUTO) }}</td><td>Low-risk, reversible write. Agent may do it; always audited.</td><td class="mono small">place_qa_hold, create_work_order, draft_permit, flag_message</td></tr>
+    <tr><td>{{ ui.tier(Tier.APPROVE) }}</td><td>Proposal only. Executes once after a person approves, if its evidence is unchanged.</td><td class="mono small">change_dispatch, amend_work_order</td></tr>
+    <tr><td>{{ ui.tier(Tier.NEVER) }}</td><td>Refused, whoever asks.</td><td class="mono small">release_qa_hold, authorise_permit, any control write</td></tr>
+  </tbody>
+</table>
+{% endcall %}
+</div>
+{% endblock %}

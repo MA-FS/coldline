@@ -1,0 +1,51 @@
+{#- Shift handover note. Context: base_context(...) + run (RunTrace with handover_note),
+    evidence (dict[id, {title, detail, version?}]) -#}
+{% extends "base.html" %}
+{% from "components/icons.html" import icon %}
+{% import "components/ui.html" as ui %}
+{% import "components/agent.html" as ag %}
+{% block content %}
+{% set P = href_prefix or "" %}
+<div class="page-head">
+  <div>
+    <h1>Shift handover</h1>
+    <p class="lede">Drafted by the agent from its own trace. Every claim cites the record it came from, so the next shift can check it in one click.</p>
+  </div>
+  <div class="page-actions">
+    {% if run %}
+    {{ ui.button("Copy as text", "outline", "doc", attrs='data-copy="#handover-text"') }}
+    {{ ui.button("Open trace " ~ run.run_id, "ghost", "arrow-right", href=P ~ "/runs/" ~ run.run_id) }}
+    {% endif %}
+  </div>
+</div>
+{% if not run %}
+{% call ui.panel("", id="handover") %}{{ ui.empty("No handover yet", "The agent drafts a handover note when it finishes an investigation. Inject a fault on the overview to start one.", "doc") }}{% endcall %}
+{% else %}
+<div class="handover-layout">
+  <article class="panel doc" id="handover">
+    <div class="doc-meta">
+      <span>{{ icon('sparkle', 'icon-sm') }} Draft by agent · {{ run.run_id }}</span>
+      <span>{{ icon('clock', 'icon-sm') }} {{ run.started_at|date_long }}, {{ run.started_at|hhmm }}</span>
+      <span>{{ ui.badge('Needs review', 'attention') }}</span>
+    </div>
+    {% if run.handover_note %}
+      <div class="prose" id="handover-text">{{ run.handover_note|markdown }}</div>
+    {% else %}
+      {{ ui.empty("No handover yet", "The agent drafts a handover when it finishes an investigation.", "doc") }}
+    {% endif %}
+  </article>
+  <aside class="stack">
+    {% if run.conclusion %}{{ ag.conclusion(run.conclusion, run.confidence) }}{% endif %}
+    {% set cites = citations(run.handover_note) %}
+    {% call ui.panel("Sources cited", id="sources", count=cites|length) %}
+      <table class="ev-table">
+        {% for rid in cites %}
+          {% set info = evidence.get(rid, {}) if evidence else {} %}
+          <tr id="ev-{{ rid }}"><td>{{ ui.ev_chip(rid) }}</td><td><div class="t">{{ info.get('title') or evidence_kind(rid)[1] }}</div>{% if info.get('detail') %}<div class="d">{{ info.detail }}</div>{% endif %}</td></tr>
+        {% endfor %}
+      </table>
+    {% endcall %}
+  </aside>
+</div>
+{% endif %}
+{% endblock %}

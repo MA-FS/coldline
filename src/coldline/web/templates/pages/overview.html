@@ -1,0 +1,64 @@
+{#- Plant overview (landing page).
+    Context: base_context(...) + plant (PlantView), detail (views.chiller_detail dict), run (RunTrace|None),
+             approvals (list[Approval]), scenarios (list[Scenario]), poll_url (optional str for live mimic refresh) -#}
+{% extends "base.html" %}
+{% from "components/icons.html" import icon %}
+{% import "components/ui.html" as ui %}
+{% import "components/agent.html" as ag %}
+{% import "components/plant.html" as pl %}
+{% from "components/mimic.html" import plant_mimic %}
+{% block content %}
+{% set P = href_prefix or "" %}
+<div id="overview">
+  <div class="page-head">
+    <div>
+      <h1>Plant Overview</h1>
+      <p class="lede">
+        {% if plant.scenario %}<span class="scenario-tag">{{ icon('bolt', 'icon-sm') }} Fault injected: <b>{{ SCENARIO_LABELS[plant.scenario][0] }}</b></span>
+        {% else %}Carcase chillers, refrigeration, boning and load-out. Inject a fault to watch the agent work.{% endif %}
+      </p>
+      {% if live_status %}
+      <p class="live-note muted small" id="live-status" role="status">
+        {% if mode == 'live' and live_status.live_available %}Live: {{ live_status.session_runs_limit - live_status.session_runs_used }} of {{ live_status.session_runs_limit }} runs left this hour · {{ live_status.remaining_usd|usd(2) }} of {{ live_status.daily_cap_usd|usd(2) }} left today
+        {% elif live_status.live_available %}Replay: recorded agent decisions, run against your plant. Live: {{ live_status.session_runs_limit - live_status.session_runs_used }} runs left this hour.
+        {% else %}{{ live_status.reason }}{% endif %}
+      </p>
+      {% endif %}
+    </div>
+    <div class="ov-controls" role="toolbar" aria-label="Demo controls" hx-select-oob="#clock">
+      <div class="segmented" role="group" aria-label="Agent mode">
+        <button type="button" aria-pressed="{{ 'true' if mode == 'replay' else 'false' }}" hx-post="/session/mode" hx-vals='{"mode": "replay"}' hx-target="#overview" hx-select="#overview" hx-swap="outerHTML">{{ icon('replay', 'icon-sm') }}Replay</button>
+        <button type="button" aria-pressed="{{ 'true' if mode == 'live' else 'false' }}" hx-post="/session/mode" hx-vals='{"mode": "live"}' hx-target="#overview" hx-select="#overview" hx-swap="outerHTML"{% if not live_available %} disabled title="{{ live_status.reason if live_status else 'Live runs are capped for today' }}"{% endif %}>{{ icon('bolt', 'icon-sm') }}Live</button>
+      </div>
+      <button class="btn btn--outline" type="button" hx-post="/session/stale" hx-vals='{"tag": "TT-402"}' hx-target="#overview" hx-select="#overview" hx-swap="outerHTML" title="Stop TT-402 (the independent probe) from reporting">{{ icon('eye-off') }}<span>Make reference probe stale</span><span class="spinner htmx-indicator"></span></button>
+      <details class="menu">
+        <summary class="btn btn--primary">{{ icon('bolt') }}<span>Inject fault</span>{{ icon('chevron-down', 'icon-sm') }}</summary>
+        <div class="menu-pop" role="menu">
+          <div class="menu-label eyebrow">Scenarios</div>
+          {% for s in scenarios %}
+          <button class="menu-item" role="menuitem" type="button" hx-post="/session/inject" hx-vals='{"scenario": "{{ s }}"}' hx-target="#overview" hx-select="#overview" hx-swap="outerHTML">
+            {{ icon({'probe_mismatch': 'probe', 'compressor_trip': 'gear', 'door_open': 'clock', 'poisoned_email': 'mail'}.get(s|string, 'bolt')) }}
+            <b>{{ SCENARIO_LABELS[s][0] }}</b><span>{{ SCENARIO_LABELS[s][1] }}</span>
+          </button>
+          {% endfor %}
+          <div class="menu-sep"></div>
+          <button class="menu-item" role="menuitem" type="button" hx-post="/session/reset" hx-target="#overview" hx-select="#overview" hx-swap="outerHTML">{{ icon('reset') }}<b>Reset plant</b><span>Clear faults, holds and approvals</span></button>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <div class="ov">
+    <section class="panel ov-mimic" id="mimic" aria-label="Plant mimic"
+      {% if poll_url %}hx-get="{{ poll_url }}" hx-trigger="every 5s, plant-changed from:body" hx-select="#mimic" hx-swap="outerHTML" hx-select-oob="#clock" hx-disinherit="*"{% endif %}>
+      <div class="mimic-wrap">{{ plant_mimic(plant, selected=detail.asset.id if detail else 'CH4', prefix=P) }}</div>
+    </section>
+
+    <div class="ov-detail">{% if detail %}{{ pl.chiller_detail(detail) }}{% endif %}</div>
+
+    <div class="ov-agent">{{ ag.agent_panel(run, approvals, prefix=P, expired=expired|default([]), role=role|default("")) }}</div>
+
+    <div class="ov-alarms">{{ pl.alarm_table(plant.alarms) }}</div>
+  </div>
+</div>
+{% endblock %}

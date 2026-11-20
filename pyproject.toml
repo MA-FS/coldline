@@ -27,6 +27,7 @@ packages = ["src/coldline"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 markers = ["live: calls the real LLM API (skipped unless COLDLINE_LIVE_TESTS=1)"]
 
 [tool.ruff]

@@ -1,0 +1,46 @@
+{#- Agent runs list. Context: base_context(...) + runs (list[RunTrace], newest first) -#}
+{% extends "base.html" %}
+{% from "components/icons.html" import icon %}
+{% import "components/ui.html" as ui %}
+{% block content %}
+{% set P = href_prefix or "" %}
+<div class="page-head">
+  <div>
+    <h1>Agent runs</h1>
+    <p class="lede">Every investigation is traced step by step: tool calls, guardrail decisions, tokens, cost and latency.</p>
+  </div>
+</div>
+{% set total_cost = runs|sum(attribute='total_cost_usd') %}
+{% set total_tok = runs|sum(attribute='total_tokens') %}
+<div class="grid-auto" style="margin-bottom: var(--s-4)">
+  {{ ui.kpi("Runs this session", runs|length, kind="measured") }}
+  {{ ui.kpi("Awaiting approval", runs|selectattr('status', 'equalto', 'awaiting_approval')|list|length, kind="measured") }}
+  {{ ui.kpi("Tokens", total_tok|num, kind="measured") }}
+  {{ ui.kpi("Model cost", total_cost|usd, note="List API prices × measured tokens", kind="measured") }}
+</div>
+{% call ui.panel("All runs", id="runs", count=runs|length, body_cls="table-wrap") %}
+  {% if runs %}
+  <table class="table">
+    <thead><tr><th>Run</th><th>Started</th><th>Scenario</th><th>Mode</th><th>Status</th><th>Conclusion</th><th class="num">Steps</th><th class="num">Tokens</th><th class="num">Cost</th><th class="num">Duration</th></tr></thead>
+    <tbody>
+    {% for r in runs %}
+      <tr>
+        <td class="mono"><a class="rowlink" href="{{ P }}/runs/{{ r.run_id }}">{{ r.run_id }}</a></td>
+        <td class="mono muted">{{ r.started_at|hhmmss }}</td>
+        <td>{{ SCENARIO_LABELS[r.scenario][0] if r.scenario else '—' }}</td>
+        <td>{{ ui.mode_badge(r.mode) }}</td>
+        <td>{{ ui.status_badge(r.status) }}</td>
+        <td style="max-width: 360px">{{ r.conclusion or '—' }}</td>
+        <td class="num">{{ r.steps|length }}</td>
+        <td class="num">{{ r.total_tokens|num }}</td>
+        <td class="num">{{ r.total_cost_usd|usd }}</td>
+        <td class="num">{{ r.duration_ms|ms }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="panel-body">{{ ui.empty("No runs yet", "Inject a fault on the overview page to start an investigation.", "sparkle") }}</div>
+  {% endif %}
+{% endcall %}
+{% endblock %}

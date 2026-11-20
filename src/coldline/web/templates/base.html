@@ -1,0 +1,63 @@
+{%- from "components/icons.html" import icon -%}
+{%- import "components/ui.html" as ui -%}
+{%- set P = href_prefix or "" -%}
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if page_title %}{{ page_title }} · {% endif %}ColdLine</title>
+  <meta name="description" content="ColdLine: an agentic shift engineer for a fictional beef processing plant. {{ DISCLAIMER }}.">
+  <meta name="color-scheme" content="dark light">
+  <meta name="htmx-config" content='{"allowEval": false, "allowScriptTags": false, "historyCacheSize": 0}'>
+  <script>try{var q=new URLSearchParams(location.search).get("theme"),t=q||localStorage.getItem("coldline-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t;}catch(e){}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/static/css/tokens.css?v={{ ASSET_VERSION }}">
+  <link rel="stylesheet" href="/static/css/base.css?v={{ ASSET_VERSION }}">
+  <link rel="stylesheet" href="/static/css/components.css?v={{ ASSET_VERSION }}">
+  <link rel="stylesheet" href="/static/css/pages.css?v={{ ASSET_VERSION }}">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <script src="/static/vendor/htmx-2.0.3.min.js" defer></script>
+  <script src="/static/vendor/htmx-ext-sse-2.2.2.js" defer></script>
+  <script src="/static/js/app.js?v={{ ASSET_VERSION }}" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body class="page-{{ active_nav or 'none' }}" hx-headers='{"X-ColdLine": "1"}'>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="disclaimer" role="note" id="disclaimer">{{ icon('info') }}<span>{{ DISCLAIMER }}</span></div>
+
+  <header class="topbar">
+    <a class="brand" href="{{ P }}/" aria-label="ColdLine home">
+      <span class="wordmark">{{ icon('logo', 'wordmark-mark') }}<span>Cold<b>Line</b></span></span>
+      <span class="brand-sep" aria-hidden="true"></span>
+      <span class="plant-id"><span class="plant-name">{{ PLANT_NAME }}</span><span class="plant-sub">BEEF PROCESSING PLANT</span></span>
+    </a>
+    <nav class="nav" aria-label="Main">
+      {% for key, label, path in NAV %}
+        <a href="{{ P }}{{ path }}"{% if key == active_nav %} aria-current="page"{% endif %}>{{ label }}{% if key == 'approvals' and pending_approvals %}<span class="count" aria-label="{{ pending_approvals }} pending">{{ pending_approvals }}</span>{% endif %}</a>
+      {% endfor %}
+    </nav>
+    <div class="topbar-right">
+      {{ ui.mode_badge(mode) }}
+      <div class="clock" id="clock" title="Simulated plant time (AWST)">
+        {% if now %}<span class="clock-date">{{ now|date_long }}</span><time class="clock-time" datetime="{{ now|iso }}">{{ now|hhmm }}</time>{% endif %}
+      </div>
+      <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle light / dark theme">{{ icon('sun') }}</button>
+    </div>
+  </header>
+
+  <main class="main" id="main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <span>{{ DISCLAIMER }}. “{{ PLANT_NAME }}” is fictional. No real plant data.</span>
+    <span>Reads OT, acts on IT, never writes to control. <a href="{{ P }}/how-it-works">How it works</a></span>
+  </footer>
+
+  <div class="toasts" id="toasts" aria-live="polite">{% block toasts %}{% endblock %}</div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,422 @@
+{
+  "run_id": "R-7841",
+  "session_id": "recording",
+  "scenario": "probe_mismatch",
+  "mode": "live",
+  "model": "claude-sonnet-5-5",
+  "started_at": "2026-11-21T06:05:01+08:00",
+  "status": "done",
+  "steps": [
+    {
+      "n": 1,
+      "kind": "think",
+      "title": "Model call 1 (limit 8)",
+      "summary": "I'm checking CH4's probe trends, lots, work orders, and the inbox to see what the alarm points to.",
+      "args": {},
+      "result_preview": "in 5173 tok (4908 cached) · out 309 tok · US$0.0042 · claude-sonnet-5-5",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 2573,
+      "input_tokens": 5173,
+      "output_tokens": 309,
+      "cost_usd": 0.004241,
+      "evidence_ids": []
+    },
+    {
+      "n": 2,
+      "kind": "tool",
+      "title": "get_sensor_trend",
+      "summary": "Read 90 min of history for TT-401, TT-402",
+      "args": {
+        "tags": [
+          "TT-401",
+          "TT-402"
+        ],
+        "window_min": 90
+      },
+      "result_preview": "TT-401 2.1->6.8 °C (good) · TT-402 2.1->2.1 °C (stale) · CH4: insufficient_data",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 1,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 3,
+      "kind": "guardrail",
+      "title": "Freshness check: TT-402 not fresh - comparison withdrawn",
+      "summary": "TT-401 6.8 °C (fresh) · TT-402 2.1 °C (stale, 5 min old) -> insufficient data",
+      "args": {},
+      "result_preview": "",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "CH4",
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 4,
+      "kind": "tool",
+      "title": "list_lots_in_zone",
+      "summary": "1 lot(s) in CH4",
+      "args": {
+        "zone_asset_id": "CH4"
+      },
+      "result_preview": "L-2231 120 carcases ready due 06:15",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "L-2231"
+      ]
+    },
+    {
+      "n": 5,
+      "kind": "tool",
+      "title": "find_work_orders",
+      "summary": "1 open work order(s) on CH4",
+      "args": {
+        "asset_id": "CH4",
+        "open_only": true
+      },
+      "result_preview": "WO-1042 open v1: TT-401 reading high intermittently, check calibration",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "WO-1042"
+      ]
+    },
+    {
+      "n": 6,
+      "kind": "tool",
+      "title": "get_asset",
+      "summary": "Chiller 4 (chiller)",
+      "args": {
+        "asset_id": "CH4"
+      },
+      "result_preview": "CH4 tags=TT-401,TT-402,EV4-SUP,EV4-RET",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "CH4"
+      ]
+    },
+    {
+      "n": 7,
+      "kind": "tool",
+      "title": "read_inbox",
+      "summary": "Read 0 inbox message(s) as untrusted data",
+      "args": {},
+      "result_preview": "0 message(s)",
+      "tier": "read",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": []
+    },
+    {
+      "n": 8,
+      "kind": "think",
+      "title": "Model call 2 (limit 8)",
+      "summary": "TT-402 is stale, so the probe comparison is withdrawn. Per procedure I'll place a precautionary hold, draw no conclusion, and propose no dispatch change.",
+      "args": {},
+      "result_preview": "in 6893 tok (5169 cached) · out 260 tok · US$0.0074 · claude-sonnet-5-5",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 2540,
+      "input_tokens": 6893,
+      "output_tokens": 260,
+      "cost_usd": 0.007426,
+      "evidence_ids": []
+    },
+    {
+      "n": 9,
+      "kind": "tool",
+      "title": "place_qa_hold",
+      "summary": "Precautionary QA hold QH-0001 placed on L-2231",
+      "args": {
+        "lot_id": "L-2231",
+        "reason": "CH4 TT-401 reads 6.75C (above 5.0C limit) while TT-402 is stale (last 2.12C at 06:00), so the comparison is withdrawn and lot temperature cannot be trusted. Precautionary hold.",
+        "evidence_ids": [
+          "TT-401",
+          "TT-402",
+          "L-2231"
+        ]
+      },
+      "result_preview": "QH-0001 active on L-2231",
+      "tier": "auto",
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "QH-0001",
+        "L-2231",
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 10,
+      "kind": "think",
+      "title": "Model call 3 (limit 8)",
+      "summary": "Calling write_handover_note",
+      "args": {},
+      "result_preview": "in 7269 tok (6891 cached) · out 560 tok · US$0.0072 · claude-sonnet-5-5",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 4596,
+      "input_tokens": 7269,
+      "output_tokens": 560,
+      "cost_usd": 0.007233,
+      "evidence_ids": []
+    },
+    {
+      "n": 11,
+      "kind": "tool",
+      "title": "write_handover_note",
+      "summary": "Handover accepted (insufficient_data), 5 citation(s) verified",
+      "args": {
+        "conclusion": "CH4 data insufficient: TT-401 reads 6.75C but TT-402 is stale, so the comparison is withdrawn and the cause is unknown.",
+        "confidence": "insufficient_data",
+        "note_markdown": "**What happened:** AL-0001 on CH4. TT-401 rose from 2.1C (05:45) to 6.75C (06:05), above the 5.0C illustrative limit. TT-402 is flagged stale (last 2.12C at 06:00), so the comparison is withdrawn [TT-401][TT-402]. No cause is concluded; a real excursion or a TT-401 fault are both possible.\n\n**Done:**\n- Precautionary QA hold on L-2231 (export, due 06:15) [QH-0001][L-2231].\n- No dispatch change proposed, as the stale probe withdraws the comparison. Dispatch is imminent, so QA and the supervisor should know the hold stands.\n- No new work order. WO-1042 (TT-401 reading high intermittently) is already open [WO-1042]. I did not amend it because there is no valid comparison evidence yet.\n\n**Awaiting approval:** nothing.\n\n**Next physical checks:**\n1. Get a fresh TT-402 reading (check the probe and its comms).\n2. Take a handheld air and product temperature in CH4.\n3. Only after that, decide on the hold, a WO-1042 amendment and the dispatch time.\n\nThe inbox was empty."
+      },
+      "result_preview": "Insufficient data - TT-402 stale; comparison withdrawn.",
+      "tier": "auto",
+      "ok": true,
+      "latency_ms": 1,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "TT-401",
+        "TT-402",
+        "QH-0001",
+        "L-2231",
+        "WO-1042"
+      ]
+    },
+    {
+      "n": 12,
+      "kind": "guardrail",
+      "title": "Evidence check: insufficient data - confidence capped at 'insufficient_data'",
+      "summary": "TT-401 6.8 °C (fresh) · TT-402 2.1 °C (stale, 5 min old) -> insufficient data Model wording was consistent with the evidence; headline set by code.",
+      "args": {},
+      "result_preview": "",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "CH4",
+        "TT-401",
+        "TT-402"
+      ]
+    },
+    {
+      "n": 13,
+      "kind": "conclusion",
+      "title": "Insufficient data - TT-402 stale; comparison withdrawn.",
+      "summary": "Confidence: insufficient_data · 1 automatic action(s) · 0 proposal(s) awaiting approval",
+      "args": {},
+      "result_preview": "",
+      "tier": null,
+      "ok": true,
+      "latency_ms": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cost_usd": 0.0,
+      "evidence_ids": [
+        "CH4",
+        "L-2231",
+        "QH-0001",
+        "TT-401",
+        "TT-402",
+        "WO-1042"
+      ]
+    }
+  ],
+  "conclusion": "Insufficient data - TT-402 stale; comparison withdrawn.",
+  "confidence": "insufficient_data",
+  "handover_note": "**What happened:** AL-0001 on CH4. TT-401 rose from 2.1C (05:45) to 6.75C (06:05), above the 5.0C illustrative limit. TT-402 is flagged stale (last 2.12C at 06:00), so the comparison is withdrawn [TT-401][TT-402]. No cause is concluded; a real excursion or a TT-401 fault are both possible.\n\n**Done:**\n- Precautionary QA hold on L-2231 (export, due 06:15) [QH-0001][L-2231].\n- No dispatch change proposed, as the stale probe withdraws the comparison. Dispatch is imminent, so QA and the supervisor should know the hold stands.\n- No new work order. WO-1042 (TT-401 reading high intermittently) is already open [WO-1042]. I did not amend it because there is no valid comparison evidence yet.\n\n**Awaiting approval:** nothing.\n\n**Next physical checks:**\n1. Get a fresh TT-402 reading (check the probe and its comms).\n2. Take a handheld air and product temperature in CH4.\n3. Only after that, decide on the hold, a WO-1042 amendment and the dispatch time.\n\nThe inbox was empty.\n\n**Checks computed in code (not by the model)**\n- CH4: TT-401 6.8 °C (fresh) · TT-402 2.1 °C (stale, 5 min old) -> insufficient data\n- Required follow-up: Request a fresh reading of TT-402 before drawing a conclusion.",
+  "approvals": [],
+  "total_cost_usd": 0.0189,
+  "total_tokens": 20464,
+  "duration_ms": 9720,
+  "extra": {
+    "recording_id": "probe_mismatch_stale",
+    "recorded": "live",
+    "recorded_at": "2026-11-20T09:26:12+00:00",
+    "description": "As above, after the reference probe TT-402 stops reporting.",
+    "requires_stale": [
+      "TT-402"
+    ],
+    "prompt_version": "345442da9f",
+    "model_turns": [
+      {
+        "think": "I'm checking CH4's probe trends, lots, work orders, and the inbox to see what the alarm points to.",
+        "tool_calls": [
+          {
+            "name": "get_sensor_trend",
+            "input": {
+              "tags": [
+                "TT-401",
+                "TT-402"
+              ],
+              "window_min": 90
+            }
+          },
+          {
+            "name": "list_lots_in_zone",
+            "input": {
+              "zone_asset_id": "CH4"
+            }
+          },
+          {
+            "name": "find_work_orders",
+            "input": {
+              "asset_id": "CH4"
+            }
+          },
+          {
+            "name": "get_asset",
+            "input": {
+              "asset_id": "CH4"
+            }
+          },
+          {
+            "name": "read_inbox",
+            "input": {}
+          }
+        ],
+        "usage": {
+          "input_tokens": 4,
+          "output_tokens": 309,
+          "cache_creation_input_tokens": 261,
+          "cache_read_input_tokens": 4908
+        },
+        "latency_ms": 2573,
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "tool_use"
+      },
+      {
+        "think": "TT-402 is stale, so the probe comparison is withdrawn. Per procedure I'll place a precautionary hold, draw no conclusion, and propose no dispatch change.",
+        "tool_calls": [
+          {
+            "name": "place_qa_hold",
+            "input": {
+              "lot_id": "L-2231",
+              "reason": "CH4 TT-401 reads 6.75C (above 5.0C limit) while TT-402 is stale (last 2.12C at 06:00), so the comparison is withdrawn and lot temperature cannot be trusted. Precautionary hold.",
+              "evidence_ids": [
+                "TT-401",
+                "TT-402",
+                "L-2231"
+              ]
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 2,
+          "output_tokens": 260,
+          "cache_creation_input_tokens": 1722,
+          "cache_read_input_tokens": 5169
+        },
+        "latency_ms": 2540,
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "tool_use"
+      },
+      {
+        "think": "",
+        "tool_calls": [
+          {
+            "name": "write_handover_note",
+            "input": {
+              "conclusion": "CH4 data insufficient: TT-401 reads 6.75C but TT-402 is stale, so the comparison is withdrawn and the cause is unknown.",
+              "confidence": "insufficient_data",
+              "note_markdown": "**What happened:** AL-0001 on CH4. TT-401 rose from 2.1C (05:45) to 6.75C (06:05), above the 5.0C illustrative limit. TT-402 is flagged stale (last 2.12C at 06:00), so the comparison is withdrawn [TT-401][TT-402]. No cause is concluded; a real excursion or a TT-401 fault are both possible.\n\n**Done:**\n- Precautionary QA hold on L-2231 (export, due 06:15) [{{hold:L-2231}}][L-2231].\n- No dispatch change proposed, as the stale probe withdraws the comparison. Dispatch is imminent, so QA and the supervisor should know the hold stands.\n- No new work order. WO-1042 (TT-401 reading high intermittently) is already open [WO-1042]. I did not amend it because there is no valid comparison evidence yet.\n\n**Awaiting approval:** nothing.\n\n**Next physical checks:**\n1. Get a fresh TT-402 reading (check the probe and its comms).\n2. Take a handheld air and product temperature in CH4.\n3. Only after that, decide on the hold, a WO-1042 amendment and the dispatch time.\n\nThe inbox was empty."
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 2,
+          "output_tokens": 560,
+          "cache_creation_input_tokens": 376,
+          "cache_read_input_tokens": 6891
+        },
+        "latency_ms": 4596,
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "tool_use"
+      }
+    ],
+    "evidence": [
+      {
+        "asset_id": "CH4",
+        "asset_name": "Chiller 4",
+        "primary": "TT-401",
+        "reference": "TT-402",
+        "probes": [
+          {
+            "tag": "TT-401",
+            "description": "Chiller 4 air (primary)",
+            "latest_c": 6.75,
+            "latest_ts": "2026-11-21T06:05:00+08:00",
+            "quality": "good",
+            "age_min": 0.016666666666666666,
+            "start_c": 2.11,
+            "peak_c": 6.78,
+            "peak_ts": "2026-11-21T06:04:00+08:00"
+          },
+          {
+            "tag": "TT-402",
+            "description": "Chiller 4 air (independent)",
+            "latest_c": 2.12,
+            "latest_ts": "2026-11-21T06:00:00+08:00",
+            "quality": "stale",
+            "age_min": 5.016666666666667,
+            "start_c": 2.09,
+            "peak_c": 2.92,
+            "peak_ts": "2026-11-21T05:41:00+08:00"
+          }
+        ],
+        "mean_gap_c": null,
+        "diverging": null,
+        "verdict": "insufficient_data",
+        "headline": "Insufficient data - TT-402 stale; comparison withdrawn.",
+        "recommendation": "Request a fresh reading of TT-402 before drawing a conclusion."
+      }
+    ],
+    "gate": {
+      "model_conclusion": "CH4 data insufficient: TT-401 reads 6.75C but TT-402 is stale, so the comparison is withdrawn and the cause is unknown.",
+      "model_confidence": "insufficient_data",
+      "cap": "insufficient_data",
+      "rewritten": false
+    }
+  }
+}

@@ -1,0 +1,109 @@
+{#- Core UI components. Import with: {% import "components/ui.html" as ui %} -#}
+{% from "components/icons.html" import icon %}
+
+{#- Panel / card. {% call ui.panel("Title", id="x", meta="...") %}body{% endcall %} -#}
+{% macro panel(title="", id="", cls="", meta="", count=None, body_cls="panel-body", tag="section") -%}
+<{{ tag }} class="panel {{ cls }}"{% if id %} id="{{ id }}"{% endif %}{% if title %} aria-labelledby="{{ id or title|lower|replace(' ', '-') }}-h"{% endif %}>
+  {% if title %}
+  <header class="panel-head">
+    <h2 class="panel-title" id="{{ id or title|lower|replace(' ', '-') }}-h">{{ title }}{% if count is not none %} <span class="count">{{ count }}</span>{% endif %}</h2>
+    {% if meta %}<div class="meta">{{ meta }}</div>{% endif %}
+  </header>
+  {% endif %}
+  <div class="{{ body_cls }}">{{ caller() if caller else "" }}</div>
+</{{ tag }}>
+{%- endmacro %}
+
+{#- KPI tile -#}
+{% macro kpi(label, value, unit="", note="", baseline="", kind="", tone="", spark=None) -%}
+<div class="kpi{% if tone %} kpi--{{ tone }}{% endif %}">
+  <div class="kpi-label"><span>{{ label }}</span>{% if kind %}<span class="kind kind--{{ kind }}">{{ kind }}</span>{% endif %}</div>
+  <div class="kpi-value">{{ value }}{% if unit %}<span class="kpi-unit">{{ unit }}</span>{% endif %}</div>
+  {% if baseline %}<div class="kpi-baseline">Baseline <s>{{ baseline }}</s></div>{% endif %}
+  {% if spark %}{{ sparkline_svg(spark, width=120, height=26, tone=tone or "normal") }}{% endif %}
+  {% if note %}<div class="kpi-note">{{ note }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{#- Status badge: tone = running | attention | ok | red | amber | muted | neutral -#}
+{% macro badge(text, tone="neutral", dot=True, cls="") -%}
+<span class="badge badge--{{ tone }} {{ cls }}">{% if dot %}<span class="dot" aria-hidden="true"></span>{% endif %}{{ text }}</span>
+{%- endmacro %}
+
+{% macro status_badge(status) -%}
+{{ badge(status|humanize, status|status_tone) }}
+{%- endmacro %}
+
+{% macro mode_badge(mode) -%}
+<span class="badge badge--mode" title="{{ 'Pre-recorded agent trace, streamed with realistic timing' if mode == 'replay' else 'Live model call (capped)' }}">{{ icon('replay' if mode == 'replay' else 'bolt', 'icon-sm') }}{{ mode }}</span>
+{%- endmacro %}
+
+{#- Alarm priority chip (annunciator style) -#}
+{% macro prio(priority, active=True) -%}
+<span class="prio prio--{{ priority|priority_tone if active else 'cleared' }}">{{ priority }}</span>
+{%- endmacro %}
+
+{#- Tier badge -#}
+{% macro tier(t) -%}
+{% if t %}<span class="tier tier--{{ t|tier_tone }}" title="Action tier: {{ t }}">{% if t == Tier.NEVER %}{{ icon('lock', 'icon-sm') }}{% endif %}{{ t }}</span>{% endif %}
+{%- endmacro %}
+
+{#- Buttons. variant = primary | approve | decline | ghost | outline | (default) -#}
+{% macro button(label, variant="", icon_name="", href="", size="", attrs="", type="button", disabled=False) -%}
+{% set cls = "btn" ~ (" btn--" ~ variant if variant else "") ~ (" btn--" ~ size if size else "") %}
+{% if href %}<a class="{{ cls }}" href="{{ href }}" {{ attrs|safe }}>{% else %}<button class="{{ cls }}" type="{{ type }}" {{ attrs|safe }}{% if disabled %} disabled{% endif %}>{% endif %}
+{% if icon_name %}{{ icon(icon_name) }}{% endif %}<span>{{ label }}</span><span class="spinner htmx-indicator" aria-hidden="true"></span>
+{% if href %}</a>{% else %}</button>{% endif %}
+{%- endmacro %}
+
+{#- Tag/value pair, e.g. TT-401 6.8 °C. tone = normal | amber | red | stale -#}
+{% macro tagval(tag, value, unit="°C", tone="normal", direction="") -%}
+<span class="tagval"><span class="tag">{{ tag }}</span><span class="val val--{{ tone }}">{{ value }}{% if unit and value != '—' %} {{ unit }}{% endif %}</span>
+{%- if direction == "up" %}{{ icon('arrow-up', 'icon-sm', 'rising') }}{% elif direction == "down" %}{{ icon('arrow-down', 'icon-sm', 'falling') }}{% endif %}
+{%- if tone == "stale" %} <span class="stale-mark">STALE</span>{% endif %}</span>
+{%- endmacro %}
+
+{#- Definition list of label/value rows: rows = [(label, value_markup), ...] -#}
+{% macro kv(rows, cls="") -%}
+<dl class="tv {{ cls }}">
+  {% for label, value in rows %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
+</dl>
+{%- endmacro %}
+
+{#- Evidence chip for a record id -#}
+{% macro ev_chip(rid, href="") -%}
+{% set k = evidence_kind(rid) %}
+<a class="ev-chip ev-chip--{{ k[0] }}" href="{{ href or '#ev-' ~ rid }}" title="{{ k[1] }}: {{ rid }}">{{ rid }}</a>
+{%- endmacro %}
+
+{% macro ev_list(ids) -%}
+{% if ids %}<span class="ev-list">{% for rid in ids %}{{ ev_chip(rid) }}{% endfor %}</span>{% endif %}
+{%- endmacro %}
+
+{#- Empty state -#}
+{% macro empty(title, text="", icon_name="inbox") -%}
+<div class="empty">{{ icon(icon_name) }}<div class="empty-title">{{ title }}</div>{% if text %}<p>{{ text }}</p>{% endif %}{{ caller() if caller else "" }}</div>
+{%- endmacro %}
+
+{#- Loading state (skeleton) -#}
+{% macro loading(label="Loading…", lines=3) -%}
+<div class="loading" aria-busy="true" aria-live="polite">
+  <div class="loading-label"><span class="spinner" aria-hidden="true"></span>{{ label }}</div>
+  {% for i in range(lines) %}<span class="skeleton" style="width: {{ [92, 74, 58, 80][i % 4] }}%"></span>{% endfor %}
+</div>
+{%- endmacro %}
+
+{#- Toast. tone = ok | amber | red | neutral. static=True renders inline (styleguide) -#}
+{% macro toast(title, text="", tone="neutral", static=False) -%}
+{% set ic = {'ok': 'check-circle', 'amber': 'alert', 'red': 'x-circle'}.get(tone, 'info') %}
+<div class="toast toast--{{ tone }}{% if static %} toast--static{% endif %}" role="status">
+  {{ icon(ic) }}
+  <div class="toast-body">{{ title }}{% if text %}<small>{{ text }}</small>{% endif %}</div>
+  <button class="toast-close" type="button" aria-label="Dismiss" data-dismiss>{{ icon('x', 'icon-sm') }}</button>
+</div>
+{%- endmacro %}
+
+{#- Inline note -#}
+{% macro note(text, icon_name="info", cls="") -%}
+<div class="note {{ cls }}">{{ icon(icon_name) }}<div>{{ text }}{{ caller() if caller else "" }}</div></div>
+{%- endmacro %}
