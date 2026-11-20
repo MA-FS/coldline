@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi.testclient import TestClient
 
+from coldline.agent import AgentService, AgentSettings
 from coldline.agent.budget import BudgetExceeded, BudgetGuard
 from coldline.agent.pricing import CONSERVATIVE, Usage, cost_usd, price_for, worst_case_cost_usd
+from coldline.main import create_app
+from coldline.web.security import COOKIE_NAME, read_cookie_value
+from coldline.web.settings import WebSettings
 
 
 class Clock:
@@ -241,7 +248,57 @@ def test_valid_json_with_invalid_content_keeps_paid_mode_off_and_the_file_intact
     assert not status.live_available and not status.ledger_ok, content
     with pytest.raises(BudgetExceeded):
         g.reserve(0.01)
-    assert path.read_text() == content  # kept as evidence for the operator, never reset to zero
+    # Kept as evidence for the operator, never reset to zero: set aside under a quarantine name.
+    (moved,) = g.quarantined()
+    assert moved.read_text() == content and not path.exists()
+
+
+HUGE = json.dumps({"day": "2027-01-14", "spent_usd": 10**310})  # legacy format, an integer no float can hold
+
+
+@pytest.mark.parametrize("content", [HUGE, json.dumps(VALID | {"outstanding": {"3": 10**400}}),
+                                     "[" * 100_000, b"\xff\xfe not text"])
+def test_a_damaged_ledger_never_stops_startup_and_is_quarantined(tmp_path, content) -> None:
+    path = tmp_path / "agent_spend.json"
+    (path.write_bytes if isinstance(content, bytes) else path.write_text)(content)
+    g = guard(Clock(), state_path=path)  # must not raise (OverflowError, RecursionError, decode errors)
+    status = g.status("s", live_enabled=True, api_key_present=True)
+    assert not status.live_available and not status.ledger_ok
+    assert status.reason == ("Live runs are disabled: the spend ledger was damaged and has been set aside for an "
+                             "operator to check. Recorded runs still work.")
+    assert len(g.quarantined()) == 1 and not path.exists()
+    # A restart must not start a fresh (under-counting) ledger while the damaged one awaits review.
+    again = guard(Clock(), state_path=path)
+    assert not again.status("s", live_enabled=True, api_key_present=True).live_available
+    assert "waiting for an operator" in again.admit("s") and not path.exists()
+    # Once the operator has reviewed and removed it, paid mode can resume.
+    g.quarantined()[0].unlink()
+    assert guard(Clock(), state_path=path).status("s", live_enabled=True, api_key_present=True).live_available
+
+
+def test_the_app_starts_and_replays_with_a_damaged_ledger(tmp_path) -> None:
+    """Cold start with the audit's file: live off with a visible reason, the hero replay still completes."""
+    yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+    damaged = json.dumps({"day": yesterday, "spent_usd": 10**310})
+    (tmp_path / "agent_spend.json").write_text(damaged)
+    agent = AgentService(AgentSettings(replay_speed=0.0, live_enabled=True, api_key_present=True,
+                                       data_dir=str(tmp_path)))
+    key, hx = "k" * 32, {"X-ColdLine": "1", "HX-Request": "true"}
+    with TestClient(create_app(WebSettings(secret_key=key), agent)) as c:
+        assert c.get("/healthz").status_code == 200
+        page = c.get("/").text
+        assert "the spend ledger was damaged and has been set aside" in page
+        r = c.post("/session/mode", data={"mode": "live"}, headers=hx)
+        assert r.status_code == 200 and "set aside" in r.headers.get("hx-trigger", "")
+        assert c.post("/session/inject", data={"scenario": "probe_mismatch"}, headers=hx).status_code == 200
+        sid = read_cookie_value(c.cookies.get(COOKIE_NAME), key.encode())
+        for _ in range(300):
+            runs = agent.list_runs(sid)
+            if runs and runs[0].status.value != "running":
+                break
+            c.portal.call(asyncio.sleep, 0.01)
+        assert runs[0].status.value != "running" and runs[0].handover_note
+    assert [f.read_text() for f in tmp_path.glob("agent_spend.json.quarantined-*")] == [damaged]
 
 
 def test_a_valid_ledger_loads_and_the_version_1_format_is_migrated(tmp_path) -> None:

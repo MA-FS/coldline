@@ -366,12 +366,13 @@ def _step(
 
 
 HERO_HANDOVER = """**Disposition (set in code from the plant records)**
-- Status: Probes disagree - cause unconfirmed. Confidence: unconfirmed.
+- Status: Probes disagree - cause unconfirmed. Evidence confidence: unconfirmed.
+- Product disposition: QA decision. Held lots stay held until QA releases them.
 - [L-2231] (CH4, due 06:15): on QA hold [QH-0311]. Do not ship or load it until QA releases the hold; only QA can release a hold.
 - Waiting for a person's decision: [A-0091] Move L-2231 dispatch 06:15 → 07:00 (Shift Supervisor); [A-0092] Add evidence note to WO-1042 (Shift Supervisor or Maintenance Planner). Nothing changes until someone approves.
 - Required follow-up: Take a handheld reference reading in Chiller 4 and loop-check TT-401 before releasing product.
 
-**Agent's notes (written by the model; the lines set in code above take precedence)**
+**Agent narrative (model-written, not authoritative)**
 
 **What happened:** Primary probe TT-401 reads 6.8 °C and has risen steadily since about 05:00 [TT-401]. Independent probe TT-402 has held 2.1 °C (±0.1) over the same hour [TT-402].
 
@@ -779,7 +780,7 @@ def trip_run() -> RunTrace:
         started_at=t(5, 21, 30),
         status=RunStatus.DONE,
         steps=steps,
-        conclusion="Confirmed: C2 trip is warming Chiller 4. Both probes agree.",
+        conclusion="Confirmed excursion - both Chiller 4 probes above 5.0 °C.",
         confidence="confirmed",
         total_cost_usd=round(sum(s.cost_usd for s in steps), 4),
         total_tokens=sum(s.input_tokens + s.output_tokens for s in steps),
@@ -820,7 +821,7 @@ def door_run() -> RunTrace:
         started_at=t(5, 9, 40),
         status=RunStatus.DONE,
         steps=steps,
-        conclusion="Transient door event, recovered. No action needed.",
+        conclusion="Transient rise in Chiller 4 - recovered, probes agree.",
         confidence="confirmed",
         total_cost_usd=round(sum(s.cost_usd for s in steps), 4),
         total_tokens=sum(s.input_tokens + s.output_tokens for s in steps),

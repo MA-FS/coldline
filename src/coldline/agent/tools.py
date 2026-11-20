@@ -601,22 +601,18 @@ def write_handover_note(ctx: RunContext, args: HandoverIn) -> ToolResult:
     _require_seen(ctx, citations, "Handover rejected: unverified citations")
 
     assessments = [assess_chiller(ctx.systems, a) for a in sorted(affected_chillers(ctx))]
-    gate = gate_conclusion(assessments, args.conclusion, args.confidence)
-    if ctx.injection_flags and "injection" not in gate.conclusion.lower():
-        # A run that read hostile text cannot end on a headline that hides it (or repeats its claims).
-        flagged = f"Suspected prompt injection in {ctx.injection_flags[0]} - no action taken on its contents."
-        uncertain = gate.cap != "confirmed"
-        gate.conclusion = f"{gate.conclusion} {flagged}" if uncertain else flagged
-        gate.rewritten = True
+    # The headline is composed in code from the evidence checks and injection flags; the model's own
+    # conclusion is kept in the trace only.
+    gate = gate_conclusion(assessments, args.conclusion, args.confidence, ctx.injection_flags)
 
     # Disposition, holds, approvals and precautions are composed in code from the plant records; the
-    # model's draft only supplies the labelled notes (or, when a replay meets a plant that differs from the
-    # recording, a notice replaces notes written for another plant).
+    # model's draft only supplies the labelled narrative (or, when a replay meets a plant that differs from
+    # the recording, a notice replaces a narrative written for another plant).
     facts = handover.facts(ctx, assessments)
     diffs: list[str] = []
     if ctx.replay_baseline is not None:
         diffs = handover.differences(facts, ctx.replay_baseline, ctx.unresolved)
-    note, removed = handover.compose(ctx, gate, assessments, args.note_markdown, diffs)
+    note, removed = handover.compose(ctx, assessments, args.note_markdown, diffs)
 
     run = ctx.run
     run.conclusion, run.confidence, run.handover_note = gate.conclusion, gate.confidence, note
@@ -640,8 +636,9 @@ def write_handover_note(ctx: RunContext, args: HandoverIn) -> ToolResult:
         detail.append(f"Model said '{gate.model_confidence}'; code set '{gate.confidence}'.")
     if gate.rewritten:
         detail.append(f"Model wording overstated the evidence and was replaced: '{gate.model_conclusion}'.")
-    elif gate.cap != "confirmed":
-        detail.append("Model wording was consistent with the evidence; headline set by code.")
+    else:
+        detail.append("Headline set by code from the evidence check. The model's conclusion is kept here only: "
+                      f"'{gate.model_conclusion}'.")
     followups = [Followup(StepKind.GUARDRAIL, title, " ".join(detail), ok=True,
                           evidence_ids=[i for a in assessments for i in a.evidence_ids])]
     unsupported = handover.contradictions(removed)
@@ -650,13 +647,13 @@ def write_handover_note(ctx: RunContext, args: HandoverIn) -> ToolResult:
         quoted = " | ".join(f"'{r['sentence'][:120]}' ({r['reason']})" for r in unsupported[:4])
         followups.append(Followup(StepKind.GUARDRAIL,
                                   f"Handover check: {len(unsupported)} unsupported sentence(s) removed",
-                                  f"Removed from the agent's notes before anyone reads or copies them: {quoted}"))
+                                  f"Removed from the agent narrative before anyone reads or copies them: {quoted}"))
     if decisions:
         quoted = " | ".join(f"'{r['sentence'][:120]}'" for r in decisions[:4])
         followups.append(Followup(StepKind.GUARDRAIL,
                                   f"Handover check: disposition set in code ({len(decisions)} sentence(s) moved)",
                                   "Holds, shipping and approvals are stated from the plant records, not in the "
-                                  f"model's words. Moved out of the agent's notes: {quoted}", ok=True))
+                                  f"model's words. Moved out of the agent narrative: {quoted}", ok=True))
     if diffs:
         followups.append(Followup(StepKind.GUARDRAIL,
                                   "Replay check: plant differs from the recording - recorded wording not reused",

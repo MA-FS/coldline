@@ -63,10 +63,17 @@ class ProbeStatus(BaseModel):
     def fresh(self) -> bool:
         return self.quality == Quality.GOOD
 
+    @property
+    def state(self) -> str:
+        if self.fresh:
+            return "fresh"
+        if self.age_min is None:  # no reading at all inside the window
+            return f"{self.quality.value}, no recent reading"
+        return f"{self.quality.value}, {self.age_min:.0f} min old"
+
     def short(self) -> str:
         value = "n/a" if self.latest_c is None else f"{self.latest_c:.1f} °C"
-        state = "fresh" if self.fresh else f"{self.quality.value}, {self.age_min:.0f} min old"
-        return f"{self.tag} {value} ({state})"
+        return f"{self.tag} {value} ({self.state})"
 
 
 class Assessment(BaseModel):
@@ -249,25 +256,54 @@ def wording_consistent(text: str, verdict: Verdict) -> bool:
     return required is None or any(word in text.lower() for word in required)
 
 
+# Most to least severe, for ordering headlines when several chillers were checked.
+_SEVERITY = (Verdict.INSUFFICIENT_DATA, Verdict.PROBES_DISAGREE, Verdict.SINGLE_PROBE,
+             Verdict.EXCURSION_CONFIRMED, Verdict.TRANSIENT_RECOVERED, Verdict.PROBES_AGREE)
+NO_EVIDENCE_HEADLINE = "No chiller temperature evidence was checked in this run."
+
+
+def evidence_cap(assessments: list[Assessment]) -> str:
+    """The highest confidence the evidence checks allow (the least certain check decides)."""
+    return min((a.confidence_cap for a in assessments), key=_RANK.__getitem__, default="confirmed")
+
+
+def injection_headline(record_id: str) -> str:
+    return f"Suspected prompt injection in {record_id} - no action taken on its contents."
+
+
+def code_conclusion(assessments: list[Assessment], flagged: list[str] | tuple[str, ...] = ()) -> str:
+    """The run's headline, composed only from the evidence checks and the injection flags.
+
+    Uncertain evidence: the worst check's headline, so no diagnosis is implied. Otherwise every chiller's
+    headline, most severe first. A run that read hostile text says so first. No model text is used: the
+    model's own conclusion is kept in the trace (``GateResult.model_conclusion``)."""
+    parts = [injection_headline(flagged[0])] if flagged else []
+    worst = min(assessments, key=lambda a: _RANK[a.confidence_cap], default=None)
+    if worst is not None and worst.verdict in UNCERTAIN:
+        parts.append(worst.headline)
+    else:
+        parts += [a.headline for a in sorted(assessments, key=lambda a: _SEVERITY.index(a.verdict))]
+    return " ".join(dict.fromkeys(parts)) or NO_EVIDENCE_HEADLINE
+
+
 def gate_conclusion(
-    assessments: list[Assessment], model_conclusion: str, model_confidence: str
+    assessments: list[Assessment], model_conclusion: str, model_confidence: str,
+    flagged: list[str] | tuple[str, ...] = (),
 ) -> GateResult:
-    """Cap the model's confidence at what the evidence supports and enforce uncertainty wording."""
+    """Cap the model's confidence at what the evidence supports; the headline itself is set by code.
+
+    ``rewritten`` records whether the model's own wording would have overstated the evidence (a cause
+    claimed on uncertain evidence, or hostile input it did not mention)."""
     model_confidence = model_confidence if model_confidence in _RANK else "unconfirmed"
     worst = min(assessments, key=lambda a: _RANK[a.confidence_cap], default=None)
-    cap = worst.confidence_cap if worst else "confirmed"
+    cap = evidence_cap(assessments)
     confidence = min(model_confidence, cap, key=_RANK.__getitem__)
-    conclusion = model_conclusion.strip()
-    rewritten = False
+    model_conclusion = model_conclusion.strip()
+    rewritten = bool(flagged) and "injection" not in model_conclusion.lower()
     if worst is not None and worst.verdict in UNCERTAIN:
-        # When the evidence is uncertain, the headline is fixed by code: no invented diagnosis survives.
-        # "rewritten" records whether the model's own wording would have overstated the evidence.
-        rewritten = not wording_consistent(conclusion, worst.verdict)
-        conclusion = worst.headline
-    elif not conclusion and worst is not None:
-        conclusion = worst.headline
+        rewritten = rewritten or not wording_consistent(model_conclusion, worst.verdict)
     return GateResult(
-        conclusion=conclusion,
+        conclusion=code_conclusion(assessments, flagged),
         confidence=confidence,
         cap=cap,
         rewritten=rewritten,

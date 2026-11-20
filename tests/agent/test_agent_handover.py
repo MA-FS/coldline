@@ -48,8 +48,8 @@ def test_bold_lead_cannot_clear_a_held_lot_and_precautions_survive() -> None:
     assert text.startswith("Disposition (set in code from the plant records)")
     assert f"L-2231 (CH4, due 06:15): on QA hold {hold.id}" in text
     assert "Do not ship or load it until QA releases the hold; only QA can release a hold." in text
-    assert text.index("on QA hold") < text.index("Agent's notes")
-    # The model's observation and its precaution about a reading stay in its notes.
+    assert text.index("on QA hold") < text.index("Agent narrative (model-written, not authoritative)")
+    # The model's observation and its precaution about a reading stay in its narrative.
     assert "Probes disagree - cause unconfirmed TT-401 TT-402 ." in text
     assert "Collect a reading using an approved thermometer." in text
     assert "Required follow-up: Take a handheld reference reading in Chiller 4" in text
@@ -94,14 +94,13 @@ def test_not_held_lot_under_uncertain_evidence_is_not_presented_as_shippable() -
     assert "Nothing in this run supports shipping it" in text and "can ship" not in text
 
 
-def test_a_decision_section_goes_whole_and_the_headline_is_checked_too() -> None:
+def test_a_decision_section_goes_whole() -> None:
     s = handover.Situation(pending_approvals=1)
     notes, removed = handover.sanitize(
         "**What happened:** [TT-401] reads high.\n\n**Awaiting approval**\n- Nothing.\n\n## Dispatch\n"
         "Move it to 09:00.\n\n**Next:** check the evaporator.", s)
     assert notes == "**What happened:** [TT-401] reads high.\n\n**Next:** check the evaporator."
     assert {r["sentence"] for r in removed} >= {"- Nothing.", "Move it to 09:00."}
-    assert handover.headline("Probes agree; L-2231 can ship.", s, [])[0] == "Probes agree."
 
 
 def test_empty_sections_left_by_the_filter_are_dropped() -> None:

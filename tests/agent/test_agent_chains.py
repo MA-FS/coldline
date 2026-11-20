@@ -143,8 +143,8 @@ async def test_fresh_replays_keep_the_recorded_wording() -> None:
     for scenario in (M, T, D, E):
         _, _, (run,) = await chain(scenario)
         assert "replay_divergence" not in run.extra, scenario
-        assert "**Replay note:**" not in run.handover_note and "**Agent's notes" in run.handover_note, scenario
-        # Only decision statements leave the recorded notes (the disposition says them from the records).
+        assert "**Replay note:**" not in run.handover_note and handover.NARRATIVE_HEADING in run.handover_note, scenario
+        # Only decision statements leave the recorded narrative (the disposition says them from the records).
         assert handover.contradictions(run.extra["gate"]["removed"]) == [], (scenario, run.extra["gate"])
 
 

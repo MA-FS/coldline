@@ -141,18 +141,21 @@ handover time.
 What a person reads, and copies with "Copy as text", cannot contradict what code enforces (`handover.py`).
 The note has three sections, in this order:
 
-1. **Disposition (set in code from the plant records)**: the gated conclusion and confidence, one line per
-   lot the run looked at (on QA hold with the hold id and "do not ship or load it until QA releases the
+1. **Disposition (set in code from the plant records)**: the evidence headline and its confidence
+   (`evidence.code_conclusion`), the fixed rule "Product disposition: QA decision. Held lots stay held until
+   QA releases them.", one line per lot the run looked at (on QA hold with the hold id and "do not ship or load it until QA releases the
    hold", or not on hold, with a warning when that lot's evidence is uncertain or shows an excursion), the
-   proposals waiting with their approver, and the follow-ups the evidence requires. The model has no input
-   into these lines.
-2. **Agent's notes (written by the model)**: the model's observations and narrative. Any sentence, bold
+   proposals waiting with their approver, and the follow-ups the evidence requires. Every line is a
+   template filled from evidence checks, lot records, holds and approvals; no model text reaches it on any
+   path, including confirmed evidence and runs with no chiller evidence. The agent never declares stock fit
+   for sale: release is QA's decision.
+2. **Agent narrative (model-written, not authoritative)**: the model's observations. Any sentence, bold
    lead or section that states a product, hold or approval decision is moved to the trace (section 1 says
    it from the records), and sentences the checks contradict are removed: a cause stated while the verdict
    is uncertain, a claim that something was released or approved, an empty inbox that is not, no alarms
    while alarms are active, nothing awaiting approval while proposals are pending, or text imitating a
-   code section. The conclusion line gets the same clause-level check. Everything left out is listed in the
-   trace and in `run.extra["gate"]["removed"]`.
+   code section. Everything left out is listed in the trace and in `run.extra["gate"]["removed"]`. This
+   filter only tidies the narrative; section 1 does not depend on it.
 3. **Checks computed in code (not by the model)**: active alarms, the evidence check per chiller, work
    orders and permit drafts, decided proposals, and what the run did with any untrusted input (derived from
    its recorded steps, not asserted).
@@ -266,7 +269,9 @@ ledger before the call and settled afterwards: at the real cost, at zero for an 
 `$COLDLINE_DATA_DIR/agent_spend.json`, replaced atomically on every change. A reservation left behind by a
 stopped process counts as spent on restart. If the ledger cannot be read or written, or fails validation
 (version and fields, a real date not in the future, finite non-negative amounts), live runs are disabled
-with an operator-visible reason and the file is left untouched until it is fixed. With server-side fallback
+with a visible reason; startup and replay are never affected. A file that fails validation is quarantined
+(renamed to `agent_spend.json.quarantined-<UTC time>`, contents untouched), and live runs stay off across
+restarts until an operator reviews it and removes the quarantined copy. With server-side fallback
 (`fallbacks: "default"`) the provider picks the fallback model, so reservations are priced at the
 conservative rate used for unlisted models; that rate is the supported ceiling, and a settlement above its
 reservation switches live runs off. Each run records its attempted calls (`live_calls`) and any spend whose

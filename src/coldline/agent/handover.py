@@ -2,22 +2,25 @@
 
 The note ``write_handover_note`` accepts has three sections, in this order:
 
-1. **Disposition** (:func:`disposition_block`), composed in code from the sandbox at handover time: the gated
-   conclusion and confidence, one line per lot the run looked at (on hold with the hold id and "do not ship
-   until QA releases it", or not on hold), the proposals waiting for a person, and the follow-ups the
-   evidence requires before any release. The model has no input into these lines, so a copied note can
+1. **Disposition** (:func:`disposition_block`), composed in code from the sandbox at handover time: the
+   evidence headline (:func:`~coldline.agent.evidence.code_conclusion`) and its confidence, the fixed rule
+   that product disposition is QA's decision, one line per lot the run looked at (on hold with the hold id
+   and "do not ship until QA releases it", or not on hold), the proposals waiting for a person, and the
+   follow-ups the evidence requires before any release. Every line is a template filled from the evidence
+   checks, lot records, holds and approvals; no model text reaches it on any path, so a copied note can
    never clear a held lot or drop a precaution the evidence calls for.
-2. **Agent's notes**, the model's own observations and narrative, clearly labelled as model-written.
+2. **Agent narrative**, the model's own observations, labelled as model-written and not authoritative.
    :func:`sanitize` keeps out of it every sentence that states a product, hold or approval decision (those
    belong to section 1) and every sentence the checks contradict: a cause while the evidence is uncertain,
    a claim that something was released or approved, an empty inbox, no alarms or nothing pending when that
-   is false. What it leaves out is listed in the trace and ``run.extra["gate"]["removed"]``.
+   is false. What it leaves out is listed in the trace and ``run.extra["gate"]["removed"]``. The filter is
+   a courtesy to the reader, not the safety mechanism: section 1 does not depend on it.
 3. **Checks computed in code** (:func:`verified_block`): alarms, the evidence check per chiller, work
-   orders and permit drafts, decided proposals, untrusted input, and what was left out of the notes.
+   orders and permit drafts, decided proposals, untrusted input, and what was left out of the narrative.
 
 :func:`facts` summarises, without record ids that change between sandboxes, what the run observed and did.
 A replay compares it with the recording's summary (:func:`differences`); when they differ the recorded
-notes described another plant, so section 2 is replaced by a replay notice composed in code.
+narrative described another plant, so section 2 is replaced by a replay notice composed in code.
 """
 
 from __future__ import annotations
@@ -27,23 +30,23 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from coldline.agent.approvals import APPROVER_ROLES
-from coldline.agent.evidence import CAUSE_CLAIM, CONFIDENCE_LEVELS, UNCERTAIN, Assessment, GateResult, Verdict
+from coldline.agent.evidence import CAUSE_CLAIM, UNCERTAIN, Assessment, Verdict, code_conclusion, evidence_cap
 from coldline.contracts import ApprovalStatus, InboxMessage, Lot, LotStatus, StepKind, Tier, WorkOrder
 
 if TYPE_CHECKING:
     from coldline.agent.context import RunContext
 
-CONFIDENCE_RANK = {c: i for i, c in enumerate(CONFIDENCE_LEVELS)}
 DISPOSITION_HEADING = "**Disposition (set in code from the plant records)**"
-NARRATIVE_HEADING = "**Agent's notes (written by the model; the lines set in code above take precedence)**"
+NARRATIVE_HEADING = "**Agent narrative (model-written, not authoritative)**"
+PRODUCT_DISPOSITION = "Product disposition: QA decision. Held lots stay held until QA releases them."
 VERIFIED_HEADING = "**Checks computed in code (not by the model)**"
 
-# --------------------------------------------------------------------------- the agent's notes
+# --------------------------------------------------------------------------- the agent narrative
 
 
 @dataclass
 class Situation:
-    """What code knows at handover time, used to decide which statements the notes may make."""
+    """What code knows at handover time, used to decide which statements the narrative may make."""
 
     uncertain: bool = False  # the worst evidence verdict is uncertain
     inbox_count: int = 0
@@ -52,13 +55,14 @@ class Situation:
 
 
 # Product, hold and approval decisions are stated by section 1 only. The match is deliberately broad: a
-# false positive only moves a sentence out of the notes (it stays in the trace); a miss is still read below
-# the code-set disposition, which comes first and says what the records say.
+# false positive only moves a sentence out of the narrative (it stays in the trace); a miss is still read
+# below the code-set disposition, under a label saying it is not authoritative.
 _DECISION = re.compile(
     r"\bl-\d{4}\b|\blots?\b|\bap-\d{4}\b|\bqh-\d{4}\b|\bapprovals?\b|\bapproves?\b|\bdisposition\b"
     r"|\bship\w*|\bdispatch\w*|\bdespatch\w*|\breleas\w*|\bunhold|\bholds?\b|\bheld\b|\bquarantin\w*"
     r"|\bdeliver\w*|\bclear(?:ed|s)?\s+(?:to|for)\b|\bgo(?:es)?\s+out\b|\bleaves?\s+(?:the\s+)?site\b"
     r"|\bgood\s+to\s+go\b|\b(?:ok|okay|safe|fine)\s+to\s+(?:sell|use|go|send)\b"
+    r"|\bfit\s+for\b|\bsal(?:e|able)\b|\bsell\w*|\bcustomers?\b"
     r"|\b(?:to|be|can|may|could|should|ok to|safe to)\s+(?:be\s+)?load(?:ed)?\b"
     r"|\bload(?:ed|ing)?\s+(?:it|them|the\s+(?:lot|truck|trailer|product|carcases)|onto|out|now)\b"
     r"|\bproduct\s+(?:is|are|was|looks|seems)\s+(?:fine|ok|okay|safe|good|unaffected|acceptable|in\s+spec"
@@ -85,7 +89,7 @@ DECISION_REASON = "a product, hold or approval decision, which the lines set in 
 
 
 def unsupported(sentence: str, s: Situation) -> str:
-    """Why a sentence must not stand in the agent's notes, or "" if it may."""
+    """Why a sentence must not stand in the agent narrative, or "" if it may."""
     text = sentence.lower()
     if _RESERVED.search(text):
         return "imitates a section composed in code"
@@ -320,36 +324,19 @@ def lot_line(lot: Lot, hold_id: str | None, check: Assessment | None) -> str:
     return f"{head}: not on hold."
 
 
-_CLAUSE = re.compile(r"\s*;\s*|(?<=[.!?])\s+")
-
-
-def headline(conclusion: str, s: Situation, assessments: list[Assessment]) -> tuple[str, list[dict[str, str]]]:
-    """The conclusion without clauses the notes could not carry either (it heads the code-set disposition
-    and the conclusion callout). Falls back to the code headline of the worst evidence check."""
-    removed, kept = [], []
-    for clause in (c for c in _CLAUSE.split(conclusion.strip()) if c.strip()):
-        reason = unsupported(clause, s)
-        if reason:
-            removed.append({"sentence": clause.strip(), "reason": reason})
-        else:
-            kept.append(clause.strip().rstrip(".;"))
-    if not removed:
-        return conclusion, []
-    if kept:
-        return "; ".join(kept) + ".", removed
-    worst = min(assessments, key=lambda a: CONFIDENCE_RANK[a.confidence_cap], default=None)
-    return (worst.headline if worst else "Investigation finished: see the checks below."), removed
-
-
 def required_followups(assessments: list[Assessment]) -> list[str]:
     """Precautions the evidence itself requires (uncertain or excursion verdicts), in check order."""
     needs = UNCERTAIN | {Verdict.EXCURSION_CONFIRMED}
     return list(dict.fromkeys(a.recommendation for a in assessments if a.verdict in needs and a.recommendation))
 
 
-def disposition_block(ctx: RunContext, gate: GateResult, assessments: list[Assessment]) -> str:
+def disposition_block(ctx: RunContext, assessments: list[Assessment]) -> str:
+    """Section 1, filled only from the evidence checks, lot records, holds, approvals and fixed templates."""
     checks = {a.asset_id: a for a in assessments}
-    lines = [f"- Status: {gate.conclusion} Confidence: {gate.confidence.replace('_', ' ')}."]
+    status = f"- Status: {code_conclusion(assessments, ctx.injection_flags)}"
+    if assessments:
+        status += f" Evidence confidence: {_verdict(evidence_cap(assessments))}."
+    lines = [status, f"- {PRODUCT_DISPOSITION}"]
     for lot_id in scope_lots(ctx):
         try:
             lot = ctx.systems.get_lot(lot_id)
@@ -373,8 +360,7 @@ def _cited_summary(a: Assessment) -> str:
     parts = []
     for p in a.probes:
         value = "n/a" if p.latest_c is None else f"{p.latest_c:.1f} °C"
-        state = "fresh" if p.fresh else f"{p.quality.value}, {p.age_min:.0f} min old"
-        parts.append(f"[{p.tag}] {value} ({state})")
+        parts.append(f"[{p.tag}] {value} ({p.state})")
     if a.mean_gap_c is not None:
         parts.append(f"mean gap {a.mean_gap_c:.1f} °C over 15 min")
     return f"{' · '.join(parts)} -> {_verdict(a.verdict)}"
@@ -420,30 +406,28 @@ def verified_block(ctx: RunContext, assessments: list[Assessment], removed: list
         lines.append(f"- {untrusted_line(ctx)}")
     if removed:
         reasons = "; ".join(dict.fromkeys(r["reason"] for r in removed))
-        lines.append(f"- Left out of the agent's notes: {len(removed)} sentence(s) ({reasons}). They are in the "
+        lines.append(f"- Left out of the agent narrative: {len(removed)} sentence(s) ({reasons}). They are in the "
                      "run trace.")
     return VERIFIED_HEADING + "\n" + "\n".join(lines)
 
 
 def replay_notice(diffs: list[str]) -> str:
     return ("**Replay note:** this replay ran against a plant that differs from the recorded run ("
-            + "; ".join(diffs[:3]) + "), so the recorded notes are not reused. Everything in this handover is "
+            + "; ".join(diffs[:3]) + "), so the recorded narrative is not reused. Everything in this handover is "
             "composed in code from this run's own results.")
 
 
-def compose(ctx: RunContext, gate: GateResult, assessments: list[Assessment], draft: str,
+def compose(ctx: RunContext, assessments: list[Assessment], draft: str,
             diffs: list[str]) -> tuple[str, list[dict[str, str]]]:
-    """The accepted note: disposition, then the agent's notes (or the replay notice), then the checks.
-    The gate's conclusion loses any clause stating a decision or contradicting the checks, here, before the
-    run records it."""
+    """The accepted note: disposition, then the agent narrative (or the replay notice), then the checks.
+    The model's draft feeds the narrative only."""
     s = situation(ctx, assessments)
-    gate.conclusion, removed = headline(gate.conclusion, s, assessments)
-    parts = [disposition_block(ctx, gate, assessments)]
+    removed: list[dict[str, str]] = []
+    parts = [disposition_block(ctx, assessments)]
     if diffs:
         parts.append(replay_notice(diffs))
     else:
-        notes, left_out = sanitize(draft.strip(), s)
-        removed += left_out
+        notes, removed = sanitize(draft.strip(), s)
         if notes:
             parts.append(NARRATIVE_HEADING + "\n\n" + notes)
     parts.append(verified_block(ctx, assessments, removed))

@@ -160,10 +160,10 @@ def test_overconfident_conclusion_is_capped_and_rewritten() -> None:
     assert ctx.run.confidence == "unconfirmed"
     assert ctx.run.extra["gate"]["rewritten"] is True
     note = ctx.run.handover_note
-    notes = note.split("**Agent's notes")[-1].split("**Checks")[0]
+    notes = note.split("**Agent narrative")[-1].split("**Checks")[0]
     assert "failed" not in note and "ship" not in notes.lower()  # the diagnosis and release advice are gone
     assert "[L-2231] (CH4, due 06:15): not on hold, but the CH4 evidence check is 'probes disagree'" in note
-    assert "Status: Probes disagree - cause unconfirmed. Confidence: unconfirmed." in note
+    assert "Status: Probes disagree - cause unconfirmed. Evidence confidence: unconfirmed." in note
     assert [r["reason"] for r in ctx.run.extra["gate"]["removed"]] == ["a cause the evidence does not confirm"]
     assert any(s.title.startswith("Handover check: 1 unsupported") for s in ctx.run.steps)
 
@@ -180,13 +180,13 @@ def test_handover_keeps_supported_sentences_and_states_held_product() -> None:
     call(ctx, "write_handover_note", conclusion="Probes disagree - cause unconfirmed.", confidence="unconfirmed",
          note_markdown=note)
     out = ctx.run.handover_note
-    disposition, notes = out.split("**Agent's notes")[0], out.split("**Agent's notes")[1].split("**Checks")[0]
+    disposition, notes = out.split("**Agent narrative")[0], out.split("**Agent narrative")[1].split("**Checks")[0]
     assert "Probes disagree - cause unconfirmed." in notes and "Ticket [WO-1042] stays open." in notes
     # Statements about the lot are made by code from the records, not by the model.
     assert "safe to dispatch" not in out and "is not held" not in out and "L-2231" not in notes
     hold = p.active_hold("L-2231")
     assert f"[L-2231] (CH4, due 06:15): on QA hold [{hold.id}]. Do not ship or load it" in disposition
-    assert "Left out of the agent's notes: 3 sentence(s)" in out
+    assert "Left out of the agent narrative: 3 sentence(s)" in out
 
 
 def test_hold_cannot_rest_on_untrusted_text_or_unrelated_records() -> None:

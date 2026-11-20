@@ -28,10 +28,12 @@ A process that stops mid-call leaves its reservation in the ledger. The next pro
 The ledger is ``$COLDLINE_DATA_DIR/agent_spend.json``, replaced atomically (write, fsync, rename) on every
 change. On start it is validated as a whole (:func:`parse_ledger`): the version and field set, a real date
 that is not in the future, and finite, non-negative amounts. The version-1 format (``day`` and
-``spent_usd`` only) is migrated. Anything else, even valid JSON such as ``{}``, is kept untouched on disk and
-paid mode stays off until an operator repairs it, because a ledger that might under-count is never trusted
-or overwritten. When any limit is hit the run falls back to replay with a visible notice; nothing errors for the
-visitor.
+``spent_usd`` only) is migrated. Anything else (unreadable, truncated, even valid JSON such as ``{}``) can
+never stop the app starting: the file is quarantined, renamed to ``agent_spend.json.quarantined-<UTC time>``
+with its contents untouched, and paid mode stays off with a visible reason. While a quarantined file exists
+next to the ledger, paid mode stays off after a restart too, because a fresh ledger would under-count the day.
+An operator reviews the file, writes a corrected ledger and removes the quarantined copy. When any limit is
+hit the run falls back to replay with a visible notice; nothing errors for the visitor.
 """
 
 from __future__ import annotations
@@ -56,6 +58,7 @@ log = logging.getLogger(__name__)
 LEDGER_VERSION = 2
 LEDGER_FIELDS = frozenset({"version", "day", "spent_usd", "unreconciled_usd", "outstanding"})
 LEGACY_FIELDS = frozenset({"day", "spent_usd"})  # version 1, before reservations were journalled
+QUARANTINE_SUFFIX = ".quarantined-"
 DAY_S = 86400.0
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -71,9 +74,15 @@ class Reservation:
 
 
 def _amount(value: object, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0:
-        raise ValueError(f"{name} must be a finite, non-negative number, not {value!r}")
-    return float(value)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{name} must be a finite, non-negative number, not {type(value).__name__}")
+    try:
+        number = float(value)  # an integer too large for a float raises OverflowError
+    except OverflowError:
+        raise ValueError(f"{name} is too large to be a spend amount") from None
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(f"{name} must be a finite, non-negative number, not {number!r}")
+    return number
 
 
 def parse_ledger(data: object, today: str) -> tuple[str, float, float, dict[str, float]]:
@@ -159,7 +168,8 @@ class BudgetGuard:
         self._day = self._today()
         self._spent = 0.0
         self._unreconciled = 0.0
-        self.ledger_error = ""
+        self.ledger_error = ""  # detail for the operator's log
+        self.ledger_notice = ""  # what a visitor is told (no paths or file contents)
         self.overrun = ""  # set when a call cost more than its reservation: the bound did not hold
         self._keep_file = False  # an invalid ledger is evidence: never overwrite it
         self._load()
@@ -169,17 +179,49 @@ class BudgetGuard:
     def _today(self) -> str:
         return datetime.fromtimestamp(self._clock(), UTC).strftime("%Y-%m-%d")
 
+    def quarantined(self) -> list[Path]:
+        if not self._state_path:
+            return []
+        return sorted(self._state_path.parent.glob(self._state_path.name + QUARANTINE_SUFFIX + "*"))
+
+    def _quarantine(self, reason: str) -> None:
+        """Set an unusable ledger aside, contents untouched, and keep paid mode off. Never raises."""
+        assert self._state_path is not None
+        self._keep_file = True  # nothing is written at the ledger path by this process
+        stamp = datetime.fromtimestamp(self._clock(), UTC).strftime("%Y%m%dT%H%M%SZ")
+        target = self._state_path.with_name(self._state_path.name + QUARANTINE_SUFFIX + stamp)
+        try:
+            os.replace(self._state_path, target)
+            where = f"moved to {target.name}"
+        except OSError as exc:
+            where = f"could not be moved aside ({type(exc).__name__}), left in place"
+        self.ledger_notice = ("Live runs are disabled: the spend ledger was damaged and has been set aside for an "
+                              "operator to check. Recorded runs still work.")
+        self._fail(f"invalid spend ledger {where}: {reason}")
+
     def _load(self) -> None:
         if not self._state_path:
+            return
+        held = self.quarantined()
+        if held:
+            self._keep_file = True
+            self.ledger_notice = ("Live runs are disabled: a damaged spend ledger is waiting for an operator to "
+                                  "check it. Recorded runs still work.")
+            self._fail(f"quarantined spend ledger {held[-1].name} needs review before paid mode can resume")
             return
         try:
             if not self._state_path.exists():
                 self._save()  # proves the directory is writable before any paid call
                 return
-            day, spent, unreconciled, reserved = parse_ledger(json.loads(self._state_path.read_text()), self._day)
-        except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+            raw = self._state_path.read_bytes()
+        except OSError as exc:
             self._keep_file = True
             self._fail(f"could not read the spend ledger ({type(exc).__name__}: {exc})")
+            return
+        try:
+            day, spent, unreconciled, reserved = parse_ledger(json.loads(raw), self._day)
+        except Exception as exc:  # noqa: BLE001 - any damage fails closed; it must never stop the app starting
+            self._quarantine(f"{type(exc).__name__}: {str(exc)[:200]}")
             return
         if day == self._day:  # an earlier day's spend (and its open reservations) belongs to that day's cap
             outstanding = sum(reserved.values())
@@ -256,7 +298,8 @@ class BudgetGuard:
         self._roll_day()
         now = self._clock()
         if self.ledger_error:
-            return "Live runs are disabled: the spend ledger is unavailable. An operator has been alerted."
+            return self.ledger_notice or ("Live runs are disabled: the spend ledger is unavailable. An operator "
+                                          "has been alerted.")
         if self.overrun:
             return "Live runs are disabled: a call cost more than its reserved bound. An operator has been alerted."
         if self._used(self._runs, session_id, now - self.window_s) >= self.session_runs_per_window:

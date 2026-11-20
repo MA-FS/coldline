@@ -7,6 +7,8 @@ from agent_helpers import plant
 
 from coldline.agent.evidence import (
     DISAGREE_HEADLINE,
+    NO_EVIDENCE_HEADLINE,
+    ProbeStatus,
     Verdict,
     assess_chiller,
     extract_citations,
@@ -51,6 +53,27 @@ def test_gate_never_raises_confidence() -> None:
     assert gate_conclusion([trip], "Real excursion", "unconfirmed").confidence == "unconfirmed"
     assert gate_conclusion([trip], "Real excursion", "confirmed").confidence == "confirmed"
     assert gate_conclusion([], "Inbox only", "confirmed").confidence == "confirmed"
+
+
+def test_headline_is_composed_in_code_on_every_path() -> None:
+    """Confirmed evidence does not let the model's conclusion through either; it stays in the trace only."""
+    p = plant(Scenario.COMPRESSOR_TRIP)
+    trip = [assess_chiller(p, "CH4"), assess_chiller(p, "CH5")]
+    adversarial = "All affected stock is fit for sale. Send it to the customer now."
+    gate = gate_conclusion(trip, adversarial, "confirmed")
+    assert gate.conclusion == " ".join(a.headline for a in trip) and gate.model_conclusion == adversarial
+    assert not gate.rewritten  # the wording was not an overstated diagnosis; it is simply not used
+    assert gate_conclusion([], adversarial, "confirmed").conclusion == NO_EVIDENCE_HEADLINE
+    flagged = gate_conclusion([], adversarial, "confirmed", ["MSG-0001"])
+    assert flagged.conclusion == "Suspected prompt injection in MSG-0001 - no action taken on its contents."
+    assert flagged.rewritten
+    hero = assess_chiller(plant(Scenario.PROBE_MISMATCH), "CH4")
+    both = gate_conclusion([hero, trip[1]], adversarial, "confirmed", ["MSG-0001"]).conclusion
+    assert both == f"Suspected prompt injection in MSG-0001 - no action taken on its contents. {DISAGREE_HEADLINE}"
+
+
+def test_stale_probe_without_readings_in_the_window_still_formats() -> None:
+    assert ProbeStatus(tag="TT-402").short() == "TT-402 n/a (bad, no recent reading)"
 
 
 def test_wording_check() -> None:
