@@ -30,7 +30,7 @@ WEB_DIR = Path(__file__).parent
 TEMPLATE_DIR = WEB_DIR / "templates"
 STATIC_DIR = WEB_DIR / "static"
 PLANT_TZ = ZoneInfo("Australia/Perth")
-ASSET_VERSION = "2"  # bump to bust static caches
+ASSET_VERSION = "4"  # bump to bust static caches
 
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 env = templates.env
@@ -88,6 +88,7 @@ STATUS_TONE = {
     RunStatus.RUNNING: "running",
     RunStatus.AWAITING_APPROVAL: "attention",
     RunStatus.DONE: "neutral",
+    RunStatus.INCOMPLETE: "red",
     RunStatus.FAILED: "red",
     ApprovalStatus.PENDING: "attention",
     ApprovalStatus.APPROVED: "ok",

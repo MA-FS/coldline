@@ -230,7 +230,7 @@ class GateResult(BaseModel):
     assessments: list[Assessment]
 
 
-_CAUSE_CLAIM = re.compile(
+CAUSE_CLAIM = re.compile(
     r"\b(confirmed|failed|faulty|fault is|caused by|due to|definitely|root cause|is broken|has failed)\b"
 )
 _REQUIRED_WORDS = {
@@ -243,7 +243,7 @@ _REQUIRED_WORDS = {
 def wording_consistent(text: str, verdict: Verdict) -> bool:
     """Does the model's own conclusion already preserve the uncertainty the evidence requires?"""
     lowered = text.lower().replace("unconfirmed", "")
-    if _CAUSE_CLAIM.search(lowered):
+    if CAUSE_CLAIM.search(lowered):
         return False
     required = _REQUIRED_WORDS.get(verdict)
     return required is None or any(word in text.lower() for word in required)

@@ -360,7 +360,7 @@
             "input": {
               "conclusion": "CH4 data insufficient: TT-401 reads 6.75C but TT-402 is stale, so the comparison is withdrawn and the cause is unknown.",
               "confidence": "insufficient_data",
-              "note_markdown": "**What happened:** AL-0001 on CH4. TT-401 rose from 2.1C (05:45) to 6.75C (06:05), above the 5.0C illustrative limit. TT-402 is flagged stale (last 2.12C at 06:00), so the comparison is withdrawn [TT-401][TT-402]. No cause is concluded; a real excursion or a TT-401 fault are both possible.\n\n**Done:**\n- Precautionary QA hold on L-2231 (export, due 06:15) [{{hold:L-2231}}][L-2231].\n- No dispatch change proposed, as the stale probe withdraws the comparison. Dispatch is imminent, so QA and the supervisor should know the hold stands.\n- No new work order. WO-1042 (TT-401 reading high intermittently) is already open [WO-1042]. I did not amend it because there is no valid comparison evidence yet.\n\n**Awaiting approval:** nothing.\n\n**Next physical checks:**\n1. Get a fresh TT-402 reading (check the probe and its comms).\n2. Take a handheld air and product temperature in CH4.\n3. Only after that, decide on the hold, a WO-1042 amendment and the dispatch time.\n\nThe inbox was empty."
+              "note_markdown": "**What happened:** {{alarm:CH4}} on CH4. TT-401 rose from 2.1C (05:45) to 6.75C (06:05), above the 5.0C illustrative limit. TT-402 is flagged stale (last 2.12C at 06:00), so the comparison is withdrawn [TT-401][TT-402]. No cause is concluded; a real excursion or a TT-401 fault are both possible.\n\n**Done:**\n- Precautionary QA hold on L-2231 (export, due 06:15) [{{hold:L-2231}}][L-2231].\n- No dispatch change proposed, as the stale probe withdraws the comparison. Dispatch is imminent, so QA and the supervisor should know the hold stands.\n- No new work order. WO-1042 (TT-401 reading high intermittently) is already open [WO-1042]. I did not amend it because there is no valid comparison evidence yet.\n\n**Awaiting approval:** nothing.\n\n**Next physical checks:**\n1. Get a fresh TT-402 reading (check the probe and its comms).\n2. Take a handheld air and product temperature in CH4.\n3. Only after that, decide on the hold, a WO-1042 amendment and the dispatch time.\n\nThe inbox was empty."
             }
           }
         ],
@@ -417,6 +417,41 @@
       "model_confidence": "insufficient_data",
       "cap": "insufficient_data",
       "rewritten": false
+    },
+    "handover_facts": {
+      "alarms": [
+        [
+          "CH4",
+          "amber",
+          "Probe mismatch - readings disagree"
+        ]
+      ],
+      "verdicts": {
+        "CH4": "insufficient_data"
+      },
+      "lots": {
+        "L-2231": [
+          "ready",
+          "06:15"
+        ]
+      },
+      "work_orders": [
+        [
+          "CH4",
+          "open",
+          1,
+          false
+        ]
+      ],
+      "inbox": [
+        0,
+        0
+      ],
+      "outcomes": {
+        "hold:L-2231": "new"
+      },
+      "approvals": [],
+      "refused": []
     }
   }
 }

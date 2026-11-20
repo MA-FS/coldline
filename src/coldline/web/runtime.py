@@ -16,6 +16,7 @@ from fastapi import HTTPException, Request
 from coldline.agent import AgentService, get_agent_service
 from coldline.contracts import PlantSystems
 from coldline.systems import SessionManager
+from coldline.systems.sessions import SessionCapacityError
 from coldline.web.security import RateLimiter, check_csrf, client_ip
 from coldline.web.settings import WebSettings
 
@@ -44,7 +45,10 @@ class Runtime:
 
     def __post_init__(self) -> None:
         s = self.settings
-        self.sessions = SessionManager(s.session_ttl_s, s.max_sessions, on_evict=self.forget)
+        self.sessions = SessionManager(
+            s.session_ttl_s, s.max_sessions, max_per_origin=s.max_sessions_per_origin, on_evict=self.forget,
+            is_busy=lambda sid: self.agent.active_run(sid) is not None,
+        )
         self.post_limiter = RateLimiter(s.posts_per_minute, 60)
         self.run_limiter = RateLimiter(s.runs_per_minute, 60)
         self.session_limiter = RateLimiter(s.new_sessions_per_10_min, 600)
@@ -85,7 +89,10 @@ async def visitor(request: Request) -> Visitor:
     ip = client_ip(request, rt.settings.client_ip_header)
     if sid not in rt.sessions and not rt.session_limiter.allow(ip):
         raise HTTPException(429, "Too many new sessions from this address. Try again in a few minutes.")
-    plant = rt.sessions.get(sid)
+    try:
+        plant = rt.sessions.get(sid, origin=ip)
+    except SessionCapacityError:
+        raise HTTPException(503, "The demo is at capacity right now. Try again in a minute.") from None
     plant.advance_wall_time()
     return Visitor(sid=sid, plant=plant, prefs=rt.prefs_for(sid), ip=ip)
 

@@ -82,3 +82,21 @@ def test_markdown_escapes_html_and_renders_citations() -> None:
 
 def test_cite_chips_escape() -> None:
     assert "&lt;b&gt;" in str(cite_chips("<b> [L-2231]"))
+
+
+def test_dock_follows_the_lot_under_investigation() -> None:
+    from datetime import timedelta
+
+    from coldline.contracts import Scenario
+    from coldline.systems import create_plant
+
+    p = create_plant()
+    assert plant_view(p.snapshot()).due_lot.id == "L-2231"  # nothing under investigation: next load due
+    p.inject(Scenario.PROBE_MISMATCH)
+    p.change_dispatch("L-2231", p.get_lot("L-2231").dispatch_due + timedelta(hours=3), "Shift Supervisor", "Hold")
+    snap = p.snapshot()
+    # L-2228 (CH1) is now due first, but the alarm is on CH4: the dock keeps showing the lot in question.
+    assert plant_view(snap).due_lot.id == "L-2231"
+    p.inject(Scenario.DOOR_OPEN)  # no alarm any more: the latest investigation's chiller decides
+    assert plant_view(p.snapshot(), run_zones=["CH4"]).due_lot.id == "L-2231"
+    assert plant_view(p.snapshot()).due_lot.id == "L-2228"

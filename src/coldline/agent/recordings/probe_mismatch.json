@@ -431,7 +431,7 @@
             "name": "propose_work_order_amendment",
             "input": {
               "wo_id": "WO-1042",
-              "note": "06:00 2026-11-21: TT-401 rose from 2.1C (05:35) to 6.8C while independent TT-402 stayed 2.1C. Gap >2C since 05:42 (AL-0001). Cause unconfirmed. Please loop-check/calibrate TT-401 and take a handheld reading in CH4.",
+              "note": "06:00 2026-11-21: TT-401 rose from 2.1C (05:35) to 6.8C while independent TT-402 stayed 2.1C. Gap >2C since 05:42 ({{alarm:CH4}}). Cause unconfirmed. Please loop-check/calibrate TT-401 and take a handheld reading in CH4.",
               "rationale": "New evidence today of TT-401 diverging from TT-402, relevant to the open TT-401 calibration fault.",
               "evidence_ids": [
                 "TT-401",
@@ -459,7 +459,7 @@
             "input": {
               "conclusion": "CH4 probes disagree (TT-401 6.8C vs TT-402 2.1C); cause unconfirmed, L-2231 held pending handheld check.",
               "confidence": "unconfirmed",
-              "note_markdown": "**What happened:** AL-0001. TT-401 rose from 2.1C (05:35) to 6.8C at 06:00, while independent TT-402 stayed at 2.1C [TT-401][TT-402]. Probes disagree - cause unconfirmed. It could be a TT-401 fault or a real local warm spot; the evidence does not separate them. Open WO-1042 already notes TT-401 reading high intermittently [WO-1042]. Inbox is empty.\n\n**Done:**\n- Precautionary QA hold on L-2231 (120 carcases, export, due 06:15) [{{hold:L-2231}}][L-2231].\n\n**Waiting for approval:**\n- {{approval:change_dispatch:L-2231}}: move L-2231 dispatch 06:15 to 09:00 (Shift Supervisor).\n- {{approval:amend_work_order:WO-1042}}: add today's evidence to WO-1042 (Supervisor or Planner).\n\n**Next physical check:** take a handheld reference reading in CH4 and loop-check TT-401 before any release. Only QA can release the hold."
+              "note_markdown": "**What happened:** {{alarm:CH4}}. TT-401 rose from 2.1C (05:35) to 6.8C at 06:00, while independent TT-402 stayed at 2.1C [TT-401][TT-402]. Probes disagree - cause unconfirmed. It could be a TT-401 fault or a real local warm spot; the evidence does not separate them. Open WO-1042 already notes TT-401 reading high intermittently [WO-1042]. Inbox is empty.\n\n**Done:**\n- Precautionary QA hold on L-2231 (120 carcases, export, due 06:15) [{{hold:L-2231}}][L-2231].\n\n**Waiting for approval:**\n- {{approval:change_dispatch:L-2231}}: move L-2231 dispatch 06:15 to 09:00 (Shift Supervisor).\n- {{approval:amend_work_order:WO-1042}}: add today's evidence to WO-1042 (Supervisor or Planner).\n\n**Next physical check:** take a handheld reference reading in CH4 and loop-check TT-401 before any release. Only QA can release the hold."
             }
           }
         ],
@@ -516,6 +516,46 @@
       "model_confidence": "unconfirmed",
       "cap": "unconfirmed",
       "rewritten": false
+    },
+    "handover_facts": {
+      "alarms": [
+        [
+          "CH4",
+          "amber",
+          "Probe mismatch - readings disagree"
+        ]
+      ],
+      "verdicts": {
+        "CH4": "probes_disagree"
+      },
+      "lots": {
+        "L-2231": [
+          "ready",
+          "06:15"
+        ]
+      },
+      "work_orders": [
+        [
+          "CH4",
+          "open",
+          1,
+          false
+        ]
+      ],
+      "inbox": [
+        0,
+        0
+      ],
+      "outcomes": {
+        "approval:amend_work_order:WO-1042": "new",
+        "approval:change_dispatch:L-2231": "new",
+        "hold:L-2231": "new"
+      },
+      "approvals": [
+        "Add evidence note to WO-1042",
+        "Move L-2231 dispatch 06:15 -> 09:00"
+      ],
+      "refused": []
     }
   }
 }

@@ -28,6 +28,7 @@ class WebSettings:
     client_ip_header: str = ""  # e.g. "Fly-Client-IP" behind a proxy that sets it; "" = socket peer
     session_ttl_s: int = 7200
     max_sessions: int = 200
+    max_sessions_per_origin: int = 20  # resident sandboxes per client IP; more replace that IP's oldest
     posts_per_minute: int = 60  # per client IP, every POST
     runs_per_minute: int = 8  # per client IP, POSTs that start an agent run
     new_sessions_per_10_min: int = 30  # per client IP, sandboxes created
@@ -45,6 +46,7 @@ class WebSettings:
             client_ip_header=env.get("COLDLINE_CLIENT_IP_HEADER", "").strip(),
             session_ttl_s=_int(env, "COLDLINE_SESSION_TTL_S", 7200),
             max_sessions=_int(env, "COLDLINE_MAX_SESSIONS", 200),
+            max_sessions_per_origin=_int(env, "COLDLINE_MAX_SESSIONS_PER_ORIGIN", 20),
             posts_per_minute=_int(env, "COLDLINE_POSTS_PER_MINUTE", 60),
             runs_per_minute=_int(env, "COLDLINE_RUNS_PER_MINUTE", 8),
             new_sessions_per_10_min=_int(env, "COLDLINE_NEW_SESSIONS_PER_10_MIN", 30),

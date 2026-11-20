@@ -5,7 +5,8 @@
 
 It is an async generator of :class:`TraceStep` so the web layer can stream each step as it happens.
 Bounds: ``max_model_calls`` per run, ``max_tokens_per_call``, a per-call timeout and a wall-clock budget
-for the whole run. In live mode every call first reserves its worst-case cost against the daily cap.
+for the whole run. In live mode every call first reserves an upper bound on its cost against the daily cap
+(see :mod:`coldline.agent.budget`); a call whose outcome is unknown keeps its reservation.
 Any failure that should not be shown as a broken agent (API error, timeout, refusal, budget) raises
 :class:`LiveRunAborted` after emitting a visible step, and the service falls back to replay.
 """
@@ -23,7 +24,7 @@ from coldline.agent.config import AgentSettings
 from coldline.agent.context import RunContext
 from coldline.agent.evidence import assess_chiller, gate_conclusion
 from coldline.agent.model import ModelClient, ModelError, ScriptExhausted
-from coldline.agent.pricing import cost_usd, worst_case_cost_usd
+from coldline.agent.pricing import cost_usd, reservation_usd
 from coldline.agent.prompts import NUDGE, SYSTEM_PROMPT, build_trigger, prompt_version
 from coldline.agent.tools import ToolRegistry, affected_chillers
 from coldline.contracts import ApprovalStatus, RunStatus, StepKind, Tier, TraceStep
@@ -61,9 +62,15 @@ def _settle(budget: BudgetGuard | None, reservation: Reservation | None, actual_
         budget.settle(reservation, actual_usd)
 
 
-def _estimate_input_tokens(tools: list[dict], messages: list[dict]) -> int:
-    # Deliberately generous (~3 chars per token, repr of SDK objects included) for the cost reservation.
-    return (len(SYSTEM_PROMPT) + len(json.dumps(tools)) + len(repr(messages))) // 3
+FRAMING_TOKENS = 512  # request framing and per-message markers, added to the byte count
+PER_MESSAGE_TOKENS = 16
+
+
+def input_token_bound(tools: list[dict], messages: list[dict]) -> int:
+    """An upper bound on input tokens: one per UTF-8 byte (a token never covers less than a byte), with
+    SDK content blocks counted by their repr (which includes field names, so it over-counts)."""
+    body = SYSTEM_PROMPT.encode() + json.dumps(tools).encode() + repr(messages).encode()
+    return len(body) + FRAMING_TOKENS + PER_MESSAGE_TOKENS * len(messages)
 
 
 async def run_loop(
@@ -75,6 +82,7 @@ async def run_loop(
     budget: BudgetGuard | None = None,
     trigger: str | None = None,
     record_turns: bool = False,
+    billable_models: tuple[str, ...] = (),
 ) -> AsyncIterator[TraceStep]:
     tools = registry.definitions()
     messages: list[dict] = [{"role": "user", "content": trigger or build_trigger(ctx.systems)}]
@@ -93,8 +101,8 @@ async def run_loop(
 
         reservation = None
         if budget is not None:
-            worst = worst_case_cost_usd(client.model, _estimate_input_tokens(tools, messages),
-                                        limits.max_tokens_per_call)
+            worst = reservation_usd(billable_models or (client.model,), input_token_bound(tools, messages),
+                                    limits.max_tokens_per_call)
             try:
                 reservation = budget.reserve(worst)
             except BudgetExceeded as exc:
@@ -113,12 +121,19 @@ async def run_loop(
             _settle(budget, reservation, 0.0)
             break
         except (ModelError, TimeoutError) as exc:
-            _settle(budget, reservation, 0.0)  # a failed call is not billed
+            # An API error response means nothing was generated. A timeout or lost connection may still
+            # have been processed and billed, so its reservation is kept (and marked unreconciled).
+            unknown = isinstance(exc, TimeoutError) or getattr(exc, "billing_unknown", False)
+            if unknown and budget is not None and reservation is not None:
+                budget.retain(reservation)
+            else:
+                _settle(budget, reservation, 0.0)
             reason = str(exc) or "model call timed out"
             yield ctx.emit(StepKind.ERROR, "Model call failed", summary=reason, ok=False)
             raise LiveRunAborted(reason) from exc
         except asyncio.CancelledError:
-            _settle(budget, reservation, 0.0)
+            if budget is not None and reservation is not None:
+                budget.retain(reservation)
             raise
 
         measured_ms = int((time.monotonic() - t0) * 1000)
@@ -184,15 +199,19 @@ async def run_loop(
 
 
 def finalize(ctx: RunContext) -> TraceStep:
-    """Close the run: Python-only conclusion if no handover was accepted, totals, status."""
+    """Close the run: totals and status. A run without an accepted handover is marked incomplete and gets
+    a Python-only conclusion; it is never shown as a finished investigation."""
     run = ctx.run
     if not ctx.handover_accepted:
         assessments = [assess_chiller(ctx.systems, a) for a in sorted(affected_chillers(ctx))]
         gate = gate_conclusion(assessments, "", "insufficient_data")
-        run.conclusion = gate.conclusion or "Run ended without an accepted handover note."
+        headline = gate.conclusion or "No evidence check was possible."
+        run.conclusion = f"Investigation incomplete: no accepted handover. {headline}"
         run.confidence = gate.confidence
+        run.extra["incomplete"] = True
         ctx.emit(StepKind.ERROR, "No accepted handover note", ok=False,
-                 summary="The conclusion shown is computed in code from the evidence checks only.")
+                 summary="The run is marked incomplete. The conclusion shown is computed in code from the "
+                         "evidence checks only; re-run the investigation.")
     pending = [a for a in run.approvals if a.status == ApprovalStatus.PENDING]
     actions = [s for s in run.steps if s.kind == StepKind.TOOL and s.tier == Tier.AUTO and s.ok
                and s.title != "write_handover_note"]
@@ -210,5 +229,8 @@ def finalize(ctx: RunContext) -> TraceStep:
     )
     run.total_cost_usd = round(sum(s.cost_usd for s in run.steps), 6)
     run.total_tokens = sum(s.input_tokens + s.output_tokens for s in run.steps)
-    run.status = RunStatus.AWAITING_APPROVAL if pending else RunStatus.DONE
+    if not ctx.handover_accepted:
+        run.status = RunStatus.INCOMPLETE
+    else:
+        run.status = RunStatus.AWAITING_APPROVAL if pending else RunStatus.DONE
     return step

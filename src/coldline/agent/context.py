@@ -48,11 +48,17 @@ class RunContext:
     seen: set[str] = field(default_factory=set)  # record ids returned by tools in this run
     lookups: set[tuple[str, str]] = field(default_factory=set)  # ("trend" | "lots" | ..., asset_id)
     created: dict[str, str] = field(default_factory=dict)  # "hold:L-2231" -> "QH-0001"
+    # Logical action -> "new" | "existing" | "reused": whether this run created the record or found it.
+    # Together with ``created`` this makes writes idempotent per run, including across a live-to-replay
+    # fallback, which keeps the same context.
+    outcomes: dict[str, str] = field(default_factory=dict)
     records: dict[str, Any] = field(default_factory=dict)  # record id -> last model fetched
     assessments: dict[str, Assessment] = field(default_factory=dict)  # asset id -> latest check
     injection_flags: list[str] = field(default_factory=list)  # untrusted record ids flagged
     tainted: bool = False  # set once suspected injection text has been read
     handover_accepted: bool = False
+    replay_baseline: dict[str, Any] | None = None  # the recording's handover facts, when replaying one
+    unresolved: set[str] = field(default_factory=set)  # recording placeholders this plant could not bind
     on_step: Callable[[TraceStep], None] | None = None
     _assets: dict[str, Asset] | None = None
 

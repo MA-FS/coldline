@@ -34,7 +34,7 @@
   {% call ui.panel("Trace", id="trace", meta=("Latency bar shows each step's share of the run")) %}
   {% set total = run.duration_ms or 1 %}
   {% set ns = namespace(offset=0) %}
-  <ol class="timeline" id="trace-steps"{% if run.status == RunStatus.RUNNING %} hx-ext="sse" sse-connect="/runs/{{ run.run_id }}/stream" sse-close="done" sse-swap="trace-step" hx-swap="beforeend"{% endif %}>
+  <ol class="timeline" id="trace-steps"{% if run.status == RunStatus.RUNNING %} hx-ext="sse" sse-connect="/runs/{{ run.run_id }}/stream?view=trace&amp;after={{ run.steps|length }}" sse-close="done" sse-swap="trace-step" hx-swap="beforeend"{% endif %}>
     {% for s in run.steps %}
       {{ ag.timeline_step(s, ns.offset, total) }}
       {% set ns.offset = ns.offset + s.latency_ms %}

@@ -24,7 +24,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from coldline.agent.approvals import APPROVER_ROLES, Proposal, Source
+from coldline.agent import handover
+from coldline.agent.approvals import APPROVER_ROLES, INCIDENT, Proposal, Source
 from coldline.agent.context import AGENT_ACTOR, RunContext
 from coldline.agent.evidence import (
     Assessment,
@@ -149,11 +150,33 @@ def _refuse_flagged(ctx: RunContext, ids: list[str]) -> None:
         )
 
 
-def _probe_sources(ctx: RunContext, asset_id: str | None, evidence_ids: list[str]) -> list[Source]:
+def _evidence_sources(ctx: RunContext, asset_id: str | None, evidence_ids: list[str]) -> list[Source]:
+    """What a proposal's evidence consists of: the probes it cites (and, for a chiller, both of its probes
+    and its evidence verdict), plus the incident generation it was proposed in."""
     tags = [t for t in evidence_ids if ctx.asset_for_tag(t)]
-    if ctx.is_chiller(asset_id):
-        tags += probe_tags(ctx.assets()[asset_id])  # type: ignore[index]
-    return [Source("probe", t) for t in dict.fromkeys(tags)]
+    owners = [asset_id, *(ctx.asset_for_tag(t) for t in tags)]
+    chillers: list[str] = list(dict.fromkeys(a for a in owners if a and ctx.is_chiller(a)))
+    for chiller in chillers:
+        tags += probe_tags(ctx.assets()[chiller])  # type: ignore[index]
+    sources = [Source("probe", t) for t in dict.fromkeys(tags)]
+    sources += [Source("verdict", c) for c in chillers]
+    return [*sources, Source(INCIDENT, INCIDENT)]
+
+
+def _require_plant_evidence(ctx: RunContext, lot: Lot, evidence_ids: list[str]) -> None:
+    """A write about a lot must cite trusted plant evidence about where that lot is stored."""
+    zone = lot.zone_asset_id
+    asset = ctx.assets().get(zone)
+    relevant = {zone, *(asset.tags if asset else [])}
+    for alarm in ctx.systems.list_alarms(active_only=True):
+        if alarm.asset_id == zone or set(alarm.tags) & relevant:
+            relevant |= {alarm.id, alarm.asset_id}
+    if not set(evidence_ids) & relevant:
+        raise Refusal(
+            "Refused: hold needs plant evidence for this lot",
+            f"Cite a reading, alarm or asset record for {zone}, where {lot.id} is stored "
+            f"(for example {', '.join(sorted(relevant - {zone})[:2]) or zone}).",
+        )
 
 
 def _record_assessment(ctx: RunContext, a: Assessment, followups: list[Followup]) -> None:
@@ -440,12 +463,15 @@ class HoldIn(_In):
 
 def place_qa_hold(ctx: RunContext, args: HoldIn) -> ToolResult:
     _require_seen(ctx, [args.lot_id, *args.evidence_ids])
+    _refuse_flagged(ctx, args.evidence_ids)
     lot = ctx.systems.get_lot(args.lot_id)
+    _require_plant_evidence(ctx, lot, args.evidence_ids)
     if lot.status == LotStatus.DISPATCHED:
         raise Refusal("Refused: lot already dispatched", f"{lot.id} has left site; raise it with QA directly.")
     already = lot.status == LotStatus.HOLD
     hold = ctx.systems.place_qa_hold(args.lot_id, args.reason, AGENT_ACTOR, args.evidence_ids)
     ctx.created[f"hold:{args.lot_id}"] = hold.id
+    ctx.outcomes.setdefault(f"hold:{args.lot_id}", "existing" if already else "new")
     ctx.see(hold.id)
     summary = (f"{args.lot_id} already on QA hold {hold.id}" if already
                else f"Precautionary QA hold {hold.id} placed on {args.lot_id}")
@@ -468,12 +494,28 @@ def create_work_order(ctx: RunContext, args: CreateWorkOrderIn) -> ToolResult:
             "Refused: check for an existing work order first",
             f"Call find_work_orders({args.asset_id}) before raising a new one so a duplicate is not created.",
         )
-    if f"wo_created:{args.asset_id}" in ctx.created:
-        raise Refusal("Refused: duplicate work order",
-                      f"{ctx.created[f'wo_created:{args.asset_id}']} was already raised on {args.asset_id} "
-                      "in this run.")
+    key = f"wo_created:{args.asset_id}"
+    # Idempotent per asset: a work order this run (or an earlier agent run) raised and that is still open
+    # is returned instead of a duplicate, including after a live run falls back to replay.
+    open_orders = ctx.systems.find_work_orders(args.asset_id, open_only=True)
+    existing = next((w for w in open_orders if w.id == ctx.created.get(key)), None) or next(
+        (w for w in open_orders if w.created_by == AGENT_ACTOR), None)
+    if existing is not None:
+        ctx.created[key] = existing.id
+        ctx.outcomes.setdefault(key, "existing")
+        ctx.records[existing.id] = existing
+        ctx.see(existing.id)
+        return ToolResult(
+            data={"wo_id": existing.id, "status": existing.status, "priority": existing.priority,
+                  "already_open": True,
+                  "note": "Not duplicated: this agent-raised work order is still open. Propose an amendment "
+                          "if there is new evidence."},
+            evidence_ids=[existing.id, args.asset_id],
+            summary=f"{existing.id} is already open on {args.asset_id}; not duplicated",
+            preview=f"{existing.id} {existing.status} P{existing.priority} on {args.asset_id} (existing)")
     wo = ctx.systems.create_work_order(args.asset_id, args.title, args.priority, args.note, AGENT_ACTOR)
-    ctx.created[f"wo_created:{args.asset_id}"] = wo.id
+    ctx.created[key] = wo.id
+    ctx.outcomes[key] = "new"
     ctx.records[wo.id] = wo
     ctx.see(wo.id)
     return ToolResult(data={"wo_id": wo.id, "status": wo.status, "priority": wo.priority},
@@ -489,11 +531,26 @@ class PermitIn(_In):
 
 
 def draft_isolation_permit(ctx: RunContext, args: PermitIn) -> ToolResult:
+    key = f"permit:{args.asset_id}"
+    # One open agent draft per asset: a repeat (in this run, a fallback, or a later run) reuses it.
+    existing = next((p for p in ctx.systems.list_permits(args.asset_id)
+                     if p.status == "draft" and p.drafted_by == AGENT_ACTOR), None)
+    if existing is not None:
+        ctx.created[key] = existing.id
+        ctx.outcomes.setdefault(key, "existing")
+        ctx.see(existing.id)
+        return ToolResult(
+            data={"permit_id": existing.id, "status": existing.status, "already_drafted": True,
+                  "note": "Not duplicated: a draft for this asset is already waiting for review."},
+            evidence_ids=[existing.id, args.asset_id],
+            summary=f"Permit draft {existing.id} for {args.asset_id} already exists; not duplicated",
+            preview=f"{existing.id} status=draft (existing)")
     draft = ctx.systems.draft_permit(args.asset_id, args.work_description, args.isolations, args.hazards,
                                      AGENT_ACTOR)
     if draft.status != "draft":
         raise Refusal("Refused: permit not a draft", "The agent may only ever create permit drafts.")
-    ctx.created[f"permit:{args.asset_id}"] = draft.id
+    ctx.created[key] = draft.id
+    ctx.outcomes[key] = "new"
     ctx.see(draft.id)
     return ToolResult(
         data={"permit_id": draft.id, "status": draft.status,
@@ -551,23 +608,28 @@ def write_handover_note(ctx: RunContext, args: HandoverIn) -> ToolResult:
         uncertain = gate.cap != "confirmed"
         gate.conclusion = f"{gate.conclusion} {flagged}" if uncertain else flagged
         gate.rewritten = True
-    footer = []
-    for a in assessments:
-        footer.append(f"- {a.asset_id}: {a.summary_line()}")
-    for rec in gate.recommendations:
-        footer.append(f"- Required follow-up: {rec}")
-    if ctx.injection_flags:
-        cited = ", ".join(f"[{i}]" for i in ctx.injection_flags)
-        footer.append(f"- Untrusted input flagged: {cited}. No action was taken on its contents.")
-    note = args.note_markdown.strip()
-    if footer:
-        note += "\n\n**Checks computed in code (not by the model)**\n" + "\n".join(footer)
+
+    # The narrative: the model's draft minus unsupported sentences, or, when a replay meets a plant that
+    # differs from the recording, a notice instead of wording written for another plant.
+    facts = handover.facts(ctx, assessments)
+    diffs: list[str] = []
+    if ctx.replay_baseline is not None:
+        diffs = handover.differences(facts, ctx.replay_baseline, ctx.unresolved)
+    removed: list[dict[str, str]] = []
+    if diffs:
+        narrative = handover.replay_notice(diffs)
+    else:
+        narrative, removed = handover.sanitize(args.note_markdown.strip(), handover.situation(ctx, assessments))
+    note = narrative + "\n\n" + handover.verified_block(ctx, gate, assessments, removed)
 
     run = ctx.run
     run.conclusion, run.confidence, run.handover_note = gate.conclusion, gate.confidence, note
     run.extra["evidence"] = [a.model_dump(mode="json") for a in assessments]
     run.extra["gate"] = {"model_conclusion": gate.model_conclusion, "model_confidence": gate.model_confidence,
-                         "cap": gate.cap, "rewritten": gate.rewritten}
+                         "cap": gate.cap, "rewritten": gate.rewritten, "removed": removed}
+    run.extra["handover_facts"] = facts
+    if diffs:
+        run.extra["replay_divergence"] = diffs
     ctx.handover_accepted = True
     ctx.audit("write_handover_note", run.run_id, gate.conclusion, citations)
 
@@ -584,14 +646,25 @@ def write_handover_note(ctx: RunContext, args: HandoverIn) -> ToolResult:
         detail.append(f"Model wording overstated the evidence and was replaced: '{gate.model_conclusion}'.")
     elif gate.cap != "confirmed":
         detail.append("Model wording was consistent with the evidence; headline set by code.")
+    followups = [Followup(StepKind.GUARDRAIL, title, " ".join(detail), ok=True,
+                          evidence_ids=[i for a in assessments for i in a.evidence_ids])]
+    if removed:
+        quoted = " | ".join(f"'{r['sentence'][:120]}' ({r['reason']})" for r in removed[:4])
+        followups.append(Followup(StepKind.GUARDRAIL,
+                                  f"Handover check: {len(removed)} unsupported sentence(s) removed",
+                                  f"Removed from the draft before anyone reads or copies it: {quoted}"))
+    if diffs:
+        followups.append(Followup(StepKind.GUARDRAIL,
+                                  "Replay check: plant differs from the recording - recorded wording not reused",
+                                  "Recorded decisions ran against your plant through the same guardrails, but "
+                                  f"{'; '.join(diffs[:4])}. The handover is composed in code from this run."))
     return ToolResult(
         data={"accepted": True, "conclusion": gate.conclusion, "confidence": gate.confidence,
-              "rewritten_by_code": gate.rewritten},
+              "rewritten_by_code": gate.rewritten, "sentences_removed": len(removed)},
         evidence_ids=citations,
         summary=f"Handover accepted ({gate.confidence}), {len(citations)} citation(s) verified",
         preview=gate.conclusion,
-        followups=[Followup(StepKind.GUARDRAIL, title, " ".join(detail), ok=True,
-                            evidence_ids=[i for a in assessments for i in a.evidence_ids])],
+        followups=followups,
     )
 
 
@@ -619,7 +692,7 @@ def propose_work_order_amendment(ctx: RunContext, args: AmendIn) -> Proposal:
         rationale=args.rationale,
         payload={"wo_id": wo.id, "asset_id": wo.asset_id, "note": args.note},
         evidence_ids=list(dict.fromkeys([wo.id, *args.evidence_ids])),
-        sources=[Source("work_order", wo.id, wo.asset_id), *_probe_sources(ctx, wo.asset_id, args.evidence_ids)],
+        sources=[Source("work_order", wo.id, wo.asset_id), *_evidence_sources(ctx, wo.asset_id, args.evidence_ids)],
         approver_roles=APPROVER_ROLES["amend_work_order"],
     )
 
@@ -654,6 +727,8 @@ def propose_dispatch_change(ctx: RunContext, args: DispatchIn) -> Proposal:
         raise Refusal("Refused: unreadable time", f"new_due {args.new_due!r}: {exc}") from exc
     if new_due <= now:
         raise Refusal("Refused: time in the past", "A new dispatch time must be later than now.")
+    if lot.dispatch_due == new_due:
+        raise Refusal("Refused: no change", f"{lot.id} is already due at {_hm(new_due)}.")
     if ctx.is_chiller(lot.zone_asset_id):
         a = assess_chiller(ctx.systems, lot.zone_asset_id)
         if a.verdict == Verdict.INSUFFICIENT_DATA:
@@ -669,7 +744,7 @@ def propose_dispatch_change(ctx: RunContext, args: DispatchIn) -> Proposal:
         payload={"lot_id": lot.id, "old_due": old.isoformat() if old else None, "new_due": new_due.isoformat(),
                  "reason": args.reason},
         evidence_ids=list(dict.fromkeys([lot.id, *args.evidence_ids])),
-        sources=[Source("lot", lot.id), *_probe_sources(ctx, lot.zone_asset_id, args.evidence_ids)],
+        sources=[Source("lot", lot.id), *_evidence_sources(ctx, lot.zone_asset_id, args.evidence_ids)],
         approver_roles=APPROVER_ROLES["change_dispatch"],
     )
 
@@ -691,15 +766,18 @@ def propose_release_qa_hold(ctx: RunContext, args: ReleaseIn) -> Proposal:
     _require_seen(ctx, [args.lot_id, *args.evidence_ids])
     _refuse_flagged(ctx, args.evidence_ids)
     lot = ctx.systems.get_lot(args.lot_id)
-    if lot.status != LotStatus.HOLD:
+    hold = ctx.systems.active_hold(lot.id)
+    if lot.status != LotStatus.HOLD or hold is None:
         raise Refusal("Refused: lot not on hold", f"{lot.id} is {lot.status.value}.")
+    ctx.see(hold.id)
     return Proposal(
         action="release_qa_hold",
-        title=f"Release QA hold on {lot.id}",
+        title=f"Release QA hold {hold.id} on {lot.id}",
         rationale=args.rationale,
-        payload={"lot_id": lot.id},
-        evidence_ids=list(dict.fromkeys([lot.id, *args.evidence_ids])),
-        sources=[Source("lot", lot.id), *_probe_sources(ctx, lot.zone_asset_id, args.evidence_ids)],
+        payload={"lot_id": lot.id, "hold_id": hold.id},
+        evidence_ids=list(dict.fromkeys([lot.id, hold.id, *args.evidence_ids])),
+        sources=[Source("lot", lot.id), Source("hold", hold.id, lot.id),
+                 *_evidence_sources(ctx, lot.zone_asset_id, args.evidence_ids)],
         approver_roles=APPROVER_ROLES["release_qa_hold"],
     )
 
@@ -863,10 +941,16 @@ class ToolRegistry:
             ctx.run.approvals.append(approval)
         target = proposal.payload.get("lot_id") or proposal.payload.get("wo_id") or "-"
         ctx.created[f"approval:{proposal.action}:{target}"] = approval.id
+        ctx.outcomes.setdefault(f"approval:{proposal.action}:{target}", "new" if created else "reused")
         ctx.see(approval.id)
         label = _ACTION_LABEL.get(proposal.action, proposal.action)
         roles = " or ".join(proposal.approver_roles)
-        state = "queued" if created else "already pending"
+        if created:
+            state = "queued"
+        elif approval.run_id == ctx.run.run_id:
+            state = "already pending"
+        else:
+            state = f"already pending from {approval.run_id} on the same evidence"
         return ToolResult(
             data={"approval_id": approval.id, "status": approval.status.value, "executed": False,
                   "needs": roles, "title": approval.title},
@@ -874,6 +958,7 @@ class ToolRegistry:
             summary=f"Proposal {approval.id} {state}: {approval.title}",
             preview=f"{approval.id} pending · needs {roles}",
             followups=[Followup(StepKind.GUARDRAIL, f"Tier check: {label} requires approval",
-                                f"Not executed. {approval.id} waits for {roles}; it expires if any of "
-                                f"{', '.join(approval.source_versions)} changes first.", tier=Tier.APPROVE, evidence_ids=[approval.id])],
+                                f"Not executed. {approval.id} waits for {roles}; it expires if its evidence "
+                                f"({', '.join(approval.source_versions)}) changes first.", tier=Tier.APPROVE,
+                                evidence_ids=[approval.id])],
         )

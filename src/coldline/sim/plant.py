@@ -55,6 +55,7 @@ class Simulator:
         self.scenario: Scenario | None = None
         self.origin = DEMO_START
         self.alarms: list[Alarm] = []
+        self.alarm_seq = 0
         self.offline: set[str] = set()
         self.history: dict[str, deque[tuple[datetime, float]]] = {
             t: deque(maxlen=121) for a in self.assets.values() for t in a.tags
@@ -113,9 +114,10 @@ class Simulator:
             return
         hero = scenario == Scenario.PROBE_MISMATCH
         tags = ["TT-401", "TT-402"]
+        self.alarm_seq += 1
         self.alarms.append(
             Alarm(
-                id=f"AL-{len(self.alarms) + 1:04}",
+                id=f"AL-{self.alarm_seq:04}",
                 ts=self.origin + (42 if hero else 1) * MINUTE,
                 priority=AlarmPriority.AMBER if hero else AlarmPriority.RED,
                 asset_id="CH4" if hero else "C2",
@@ -126,6 +128,12 @@ class Simulator:
                 limit="Δ > 2.0 °C (15 min)" if hero else "Running compressors < 2",
             )
         )
+
+    def trim_alarms(self, keep_cleared: int) -> None:
+        """Keep every active alarm and the newest ``keep_cleared`` cleared ones."""
+        cleared = [a for a in self.alarms if not a.active]
+        drop = {a.id for a in cleared[: max(0, len(cleared) - keep_cleared)]}
+        self.alarms = [a for a in self.alarms if a.id not in drop]
 
     def latest(self, tag: str) -> Reading:
         """Return a detached sample marked with current freshness."""

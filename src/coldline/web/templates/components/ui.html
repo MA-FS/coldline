@@ -34,6 +34,11 @@
 {{ badge(status|humanize, status|status_tone) }}
 {%- endmacro %}
 
+{#- Header approvals count. Always rendered (hidden at 0) so out-of-band refreshes can replace it. -#}
+{% macro nav_count(n, oob=False) -%}
+<span class="count" id="nav-approvals-count"{% if oob %} hx-swap-oob="true"{% endif %}{% if not n %} hidden{% endif %} aria-label="{{ n }} pending">{{ n }}</span>
+{%- endmacro %}
+
 {% macro mode_badge(mode) -%}
 <span class="badge badge--mode" title="{{ 'Pre-recorded agent trace, streamed with realistic timing' if mode == 'replay' else 'Live model call (capped)' }}">{{ icon('replay' if mode == 'replay' else 'bolt', 'icon-sm') }}{{ mode }}</span>
 {%- endmacro %}

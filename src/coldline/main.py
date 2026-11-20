@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from coldline.agent import AgentService
 from coldline.web import preview
@@ -46,9 +47,11 @@ def create_app(settings: WebSettings | None = None, agent: AgentService | None =
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.exception_handler(HTTPException)
-    async def http_error(request: Request, exc: HTTPException) -> Response:
-        return _error(request, exc.status_code, str(exc.detail))
+    # Starlette's base class also covers routing errors (an unknown path is a Starlette 404, not FastAPI's).
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, exc: StarletteHTTPException) -> Response:
+        message = "No page here." if exc.status_code == 404 and exc.detail == "Not Found" else str(exc.detail)
+        return _error(request, exc.status_code, message)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> Response:

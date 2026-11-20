@@ -171,7 +171,31 @@ def compressor_state(asset: Asset, alarm: Alarm | None = None) -> str:
     return "run" if asset.running else "standby"
 
 
-def plant_view(snap: PlantSnapshot, trends: list[Trend] | None = None) -> PlantView:
+def investigated_zones(snap: PlantSnapshot, run_zones: list[str] | None = None) -> list[str]:
+    """Chillers under investigation: those named by active alarms (directly or through their probe tags),
+    else the chillers the latest investigation looked at."""
+    chillers = {a.id: a for a in snap.assets if a.kind == AssetKind.CHILLER}
+    owner = {t: cid for cid, a in chillers.items() for t in a.tags}
+    zones: list[str] = []
+    for alarm in (a for a in snap.alarms if a.active):
+        for zone in [alarm.asset_id, *(owner.get(t, "") for t in alarm.tags)]:
+            if zone in chillers and zone not in zones:
+                zones.append(zone)
+    return zones or [z for z in (run_zones or []) if z in chillers]
+
+
+def dock_lot(snap: PlantSnapshot, zones: list[str]) -> Lot | None:
+    """The load the dock shows: the next one due from the chillers under investigation, so the dock and the
+    chiller panel always talk about the same lot; with nothing under investigation, the next load due."""
+    due = sorted(
+        [lot for lot in snap.lots if lot.status != LotStatus.DISPATCHED and lot.dispatch_due],
+        key=lambda lot: lot.dispatch_due,
+    )
+    return next((lot for lot in due if lot.zone_asset_id in zones), due[0] if due else None)
+
+
+def plant_view(snap: PlantSnapshot, trends: list[Trend] | None = None,
+               run_zones: list[str] | None = None) -> PlantView:
     tmap = {t.tag: t for t in (trends or [])}
     active = [a for a in snap.alarms if a.active]
     alarm_tags: dict[str, Alarm] = {}
@@ -220,10 +244,6 @@ def plant_view(snap: PlantSnapshot, trends: list[Trend] | None = None) -> PlantV
         elif asset.kind == AssetKind.ROOM and asset.tags:
             boning = _tag_view(asset.tags[0], snap.latest, alarm_tags, tmap, high=None)
 
-    due = sorted(
-        [lot for lot in snap.lots if lot.status != LotStatus.DISPATCHED and lot.dispatch_due],
-        key=lambda lot: lot.dispatch_due,
-    )
     lots_by_asset: dict[str, list[Lot]] = {}
     for lot in snap.lots:
         lots_by_asset.setdefault(lot.zone_asset_id, []).append(lot)
@@ -236,7 +256,7 @@ def plant_view(snap: PlantSnapshot, trends: list[Trend] | None = None) -> PlantV
         evap_supply=_tag_view(evap_sup, snap.latest, no_alarm, tmap, high=None),
         evap_return=_tag_view(evap_ret, snap.latest, no_alarm, tmap, high=None),
         boning_temp=boning,
-        due_lot=due[0] if due else None,
+        due_lot=dock_lot(snap, investigated_zones(snap, run_zones)),
         alarms=sorted(snap.alarms, key=lambda a: a.ts, reverse=True),
         active_alarm_count=len(active),
         scenario=snap.active_scenario,

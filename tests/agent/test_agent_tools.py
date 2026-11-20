@@ -111,8 +111,15 @@ def test_work_order_requires_duplicate_check_first() -> None:
     args = {"asset_id": "C2", "title": "C2 tripped", "priority": 1, "note": "Compressor stopped, standby offline."}
     assert call(ctx, "create_work_order", **args).steps[0].title.startswith("Refused: check for an existing")
     call(ctx, "find_work_orders", asset_id="C2")
-    assert not call(ctx, "create_work_order", **args).is_error
-    assert call(ctx, "create_work_order", **args).steps[0].title == "Refused: duplicate work order"
+    first = json.loads(call(ctx, "create_work_order", **args).content)["data"]
+    again = json.loads(call(ctx, "create_work_order", **args).content)["data"]
+    assert again["wo_id"] == first["wo_id"] and again["already_open"] is True  # idempotent, not duplicated
+    assert _audit_actions(p).count("create_work_order") == 1
+    # A later run (or a replay after a live fallback) finds the agent's open order instead of raising another.
+    later = context(p)
+    call(later, "find_work_orders", asset_id="C2")
+    assert json.loads(call(later, "create_work_order", **args).content)["data"]["wo_id"] == first["wo_id"]
+    assert _audit_actions(p).count("create_work_order") == 1
 
 
 def test_permit_is_draft_only() -> None:
@@ -152,3 +159,42 @@ def test_overconfident_conclusion_is_capped_and_rewritten() -> None:
     assert ctx.run.conclusion == "Probes disagree - cause unconfirmed."
     assert ctx.run.confidence == "unconfirmed"
     assert ctx.run.extra["gate"]["rewritten"] is True
+    note = ctx.run.handover_note
+    assert "failed" not in note and "ship" not in note.lower()  # the diagnosis and release advice are gone
+    assert "Status: Probes disagree - cause unconfirmed. Confidence: unconfirmed." in note
+    assert [r["reason"] for r in ctx.run.extra["gate"]["removed"]] == ["a cause the evidence does not confirm"]
+    assert any(s.title.startswith("Handover check: 1 unsupported") for s in ctx.run.steps)
+
+
+def test_handover_keeps_supported_sentences_and_states_held_product() -> None:
+    p = plant(Scenario.PROBE_MISMATCH)
+    ctx = context(p)
+    investigate_ch4(ctx)
+    call(ctx, "place_qa_hold", lot_id="L-2231", reason="Probes disagree on CH4", evidence_ids=["TT-401", "TT-402"])
+    note = ("**What happened:** [TT-401] reads high; [TT-402] is steady. Probes disagree - cause unconfirmed.\n"
+            "- [L-2231] is safe to dispatch at 06:15.\n"
+            "- [L-2231] is not held.\n"
+            "- Ticket [WO-1042] stays open. Only QA can release the hold.")
+    call(ctx, "write_handover_note", conclusion="Probes disagree - cause unconfirmed.", confidence="unconfirmed",
+         note_markdown=note)
+    out = ctx.run.handover_note
+    narrative = out.split("**Checks computed in code")[0]
+    assert "Probes disagree - cause unconfirmed." in narrative and "Only QA can release the hold." in narrative
+    assert "safe to dispatch" not in narrative and "is not held" not in narrative
+    hold = p.active_hold("L-2231")
+    assert f"On QA hold: [L-2231] ([{hold.id}])" in out
+    assert "Removed from the model's draft: 2 unsupported sentence(s)" in out
+
+
+def test_hold_cannot_rest_on_untrusted_text_or_unrelated_records() -> None:
+    p = plant(Scenario.POISONED_EMAIL)
+    ctx = context(p)
+    call(ctx, "read_inbox")
+    call(ctx, "get_lot", lot_id="L-2231")
+    (msg,) = ctx.injection_flags
+    flagged = call(ctx, "place_qa_hold", lot_id="L-2231", reason="Carrier email says hold it.",
+                   evidence_ids=[msg, "L-2231"])
+    assert flagged.steps[0].title == "Refused: untrusted text used as justification"
+    bare = call(ctx, "place_qa_hold", lot_id="L-2231", reason="Holding as the carrier asked.", evidence_ids=["L-2231"])
+    assert bare.steps[0].title == "Refused: hold needs plant evidence for this lot"
+    assert p.get_lot("L-2231").status.value == "ready"

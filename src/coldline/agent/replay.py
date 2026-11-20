@@ -9,6 +9,18 @@ hold really appears, the proposals really wait for approval, and a stale probe r
 Records the agent creates during a run (holds, work orders, permits, approvals) get new ids in every
 sandbox, so recordings refer to them by placeholder, e.g. ``{{hold:L-2231}}`` or
 ``{{approval:change_dispatch:L-2231}}``. ``{{flagged}}`` is the first record flagged as a suspected injection.
+Alarms are numbered per sandbox too, so ``{{alarm:C2}}`` is the alarm currently active on C2. Placeholders
+resolve against this plant's records when each recorded turn is replayed.
+
+Recorded wording describes the plant it was recorded on. Each recording stores ``handover_facts``, an id-free
+summary of what that run observed and did (see :mod:`coldline.agent.handover`). If a replay observes a
+different plant, for example after an earlier fault left a lot on hold, the handover check notices and
+composes the note in code instead of reusing the recorded wording.
+
+Selection: the recording for the requested scenario, with the stale-probe variant when its probe is stale.
+An inbox-only scenario injected while an earlier fault's alarm is still active replays the investigation of
+that fault instead: those recordings read the inbox too, and a handover that skipped the active alarm would
+be rejected.
 """
 
 from __future__ import annotations
@@ -27,12 +39,28 @@ RECORDINGS_DIR = Path(__file__).parent / "recordings"
 _PLACEHOLDER = re.compile(r"\{\{([a-z_]+(?::[A-Za-z0-9_-]+)*)\}\}")
 
 
+def _alarm_on(ctx: RunContext, asset_id: str) -> str | None:
+    alarms = [a for a in ctx.systems.list_alarms(active_only=False) if a.asset_id == asset_id]
+    active = [a for a in alarms if a.active]
+    chosen = (active or alarms)[-1:]
+    return chosen[0].id if chosen else None
+
+
 def resolve_placeholders(obj: Any, ctx: RunContext) -> Any:
     def sub(match: re.Match[str]) -> str:
         key = match.group(1)
         if key == "flagged":
-            return ctx.injection_flags[0] if ctx.injection_flags else match.group(0)
-        return ctx.created.get(key, match.group(0))  # unresolved stays visible and fails citation checks
+            value = ctx.injection_flags[0] if ctx.injection_flags else None
+        elif key.startswith("alarm:"):
+            value = _alarm_on(ctx, key.split(":", 1)[1])
+        else:
+            value = ctx.created.get(key)
+        if value is None:
+            # Nothing in this plant matches (for example a proposal the recorded run made was refused
+            # here). Say so readably; the replay check then stops the recorded wording being reused.
+            ctx.unresolved.add(key)
+            return f"(none in this plant: {key.replace(':', ' ')})"
+        return value
 
     if isinstance(obj, str):
         return _PLACEHOLDER.sub(sub, obj)
@@ -43,9 +71,14 @@ def resolve_placeholders(obj: Any, ctx: RunContext) -> Any:
     return obj
 
 
-def to_placeholders(obj: Any, created: dict[str, str], flagged: list[str]) -> Any:
-    """Inverse of :func:`resolve_placeholders`, used when saving a live run as a recording."""
+def to_placeholders(obj: Any, created: dict[str, str], flagged: list[str],
+                    alarms: dict[str, str] | None = None) -> Any:
+    """Inverse of :func:`resolve_placeholders`, used when saving a live run as a recording.
+
+    ``alarms`` maps alarm id -> asset id for the alarms the recorded plant had.
+    """
     pairs = [(rid, key) for key, rid in created.items()] + [(rid, "flagged") for rid in flagged[:1]]
+    pairs += [(aid, f"alarm:{asset}") for aid, asset in (alarms or {}).items()]
 
     def convert(text: str) -> str:
         for rid, key in pairs:
@@ -55,9 +88,9 @@ def to_placeholders(obj: Any, created: dict[str, str], flagged: list[str]) -> An
     if isinstance(obj, str):
         return convert(obj)
     if isinstance(obj, list):
-        return [to_placeholders(v, created, flagged) for v in obj]
+        return [to_placeholders(v, created, flagged, alarms) for v in obj]
     if isinstance(obj, dict):
-        return {k: to_placeholders(v, created, flagged) for k, v in obj.items()}
+        return {k: to_placeholders(v, created, flagged, alarms) for k, v in obj.items()}
     return obj
 
 
@@ -71,6 +104,7 @@ class Recording:
     recorded: str  # "hand-authored" | "live"
     model: str
     description: str = ""
+    facts: dict[str, Any] | None = None  # handover facts of the recorded run (see coldline.agent.handover)
 
     @classmethod
     def from_trace(cls, trace: RunTrace) -> Recording:
@@ -84,6 +118,7 @@ class Recording:
             recorded=extra.get("recorded", "live"),
             model=trace.model,
             description=extra.get("description", ""),
+            facts=extra.get("handover_facts"),
         )
 
 
@@ -101,7 +136,8 @@ class RecordingLibrary:
         return self.items.get(recording_id)
 
     def select(self, scenario: Scenario | None, systems: PlantSystems) -> Recording | None:
-        """Pick the recording that matches the scenario and the current probe state."""
+        """Pick the recording that matches the plant: scenario, active alarms and probe state."""
+        scenario = replay_scenario(scenario, systems)
         candidates = sorted((r for r in self.items.values() if r.scenario == scenario),
                             key=lambda r: -len(r.requires_stale))
         now = systems.now()
@@ -112,6 +148,24 @@ class RecordingLibrary:
             if any(analysis.freshness(r, now) != Quality.GOOD for r in readings.values()):
                 return rec
         return None
+
+
+def replay_scenario(scenario: Scenario | None, systems: PlantSystems) -> Scenario | None:
+    """The scenario whose recorded investigation covers this plant (see the module docstring)."""
+    snap = systems.snapshot()
+    if scenario is None:
+        scenario = snap.active_scenario
+    if scenario == Scenario.POISONED_EMAIL and snap.physical_scenario and any(a.active for a in snap.alarms):
+        return snap.physical_scenario
+    return scenario
+
+
+def selection_note(requested: Scenario | None, recording: Recording) -> str:
+    """Trace text when the replayed recording is not the requested scenario's own."""
+    if recording.scenario == requested or requested is None:
+        return ""
+    return (f"An alarm from the earlier {recording.scenario.value.replace('_', ' ')} fault is still active, so "
+            f"this replays the recorded investigation of that fault; it reads the inbox as well.")
 
 
 def save_recording(trace: RunTrace, path: Path) -> None:

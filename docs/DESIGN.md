@@ -36,7 +36,7 @@ page can also be previewed under `/preview/...` (see [Previews](#previews)); pro
 |---|---|---|
 | Surfaces | `--bg-0` page · `--bg-1` panel · `--bg-2` raised · `--bg-3` hover/selected · `--bg-inset` code/obs · `--bg-banner` | Layering, darkest at the back |
 | Lines | `--line` · `--line-soft` · `--line-strong` | 1px borders, table rules, equipment frames |
-| Text | `--text-1` values · `--text-2` body · `--text-3` secondary/axes · `--text-4` disabled/stale | Four levels, all ≥ 4.5:1 on `--bg-1` except `--text-4` (decorative/disabled only) |
+| Text | `--text-1` values · `--text-2` body · `--text-3` secondary, axes, stale values (italic), step metrics · `--text-4` decoration only | Four levels, all ≥ 4.5:1 on `--bg-1` in both themes except `--text-4`, which never carries text a person needs to read |
 | Process | `--proc` · `--proc-dim` · `--proc-fill` | Mimic outlines and pipes; dim = standby |
 | Abnormal | `--amber` `--amber-weak` `--amber-line` `--amber-ink` · `--red` `--red-weak` `--red-line` | Alarms, holds, refusals |
 | Confirm | `--ok` `--ok-weak` | Ticks only |
@@ -175,7 +175,8 @@ inline script except the hashed pre-paint theme switch, and `htmx-config` turns 
 ## Accessibility
 
 Body text contrast ≥ 7:1, secondary ≥ 4.5:1 on panels. Visible focus ring on every control; mimic units are
-keyboard-focusable with descriptive `aria-label`s, and the SVG carries a `<desc>` summarising active alarms.
+keyboard-focusable toggle buttons (`aria-pressed` marks the chiller shown in the detail panel) with
+descriptive `aria-label`s, and the SVG carries a `<desc>` summarising active alarms.
 Status is never colour alone: alarms have text priority chips, stale has a label, blocked steps have an icon and
 the word "Blocked". Layout stacks to one column below 1200px; on phones the mimic scrolls horizontally inside
 its panel rather than shrinking text below legibility.

@@ -86,10 +86,17 @@ def test_two_cookies_get_isolated_sandboxes() -> None:
             assert rt(a).sessions.get(sid(b)).get_lot("L-2231").status == LotStatus.READY
             run_id = rt(a).agent.list_runs(sid(a))[0].run_id
             assert b.get(f"/runs/{run_id}").status_code == 404  # another visitor's run is invisible
-            assert b.get(f"/runs/{run_id}/stream").status_code == 404
+            stream = b.get(f"/runs/{run_id}/stream")  # ends at once, revealing nothing
+            assert "event: done" in stream.text and "data: missing" in stream.text and "event: step" not in stream.text
             approval = rt(a).agent.list_approvals(sid(a))[0]
             assert b.post(f"/approvals/{approval.id}/approve", headers=HX).status_code == 404
             assert "No runs yet" in b.get("/runs").text
+            # Ids are numbered per visitor: b's first run and proposal carry the same ids as a's, separately.
+            inject(b)
+            assert rt(a).agent.list_runs(sid(b))[0].run_id == run_id == "R-7841"
+            assert rt(a).agent.list_approvals(sid(b))[-1].id == "AP-0001"
+            assert rt(a).sessions.get(sid(a)).get_lot("L-2231").dispatch_due == \
+                rt(a).sessions.get(sid(b)).get_lot("L-2231").dispatch_due  # neither touched the other
 
 
 def test_evicted_sandbox_forgets_agent_state(client: TestClient) -> None:
@@ -138,12 +145,41 @@ def test_inject_run_approve_then_stale_expires_and_changes_conclusion(client: Te
     assert "approval_expired" in client.get("/audit").text
 
 
+def test_first_visit_offers_the_hero_scenario_and_a_finished_run_folds_its_trace(client: TestClient) -> None:
+    first = client.get("/").text
+    assert "Run the hero scenario" in first and 'hx-vals=\'{"scenario": "probe_mismatch"}\'' in first
+    inject(client)
+    page = client.get("/").text
+    assert '<details class="agent-trace">' in page and 'id="agent-steps"' in page
+    assert page.index("agent-trace") < page.index('id="agent-conclusion"') < page.index("Needs your decision")
+    assert "What to try next:" in page and "approve the dispatch change as Shift Supervisor" in page
+    assert "Run the hero scenario" not in page
+
+
+def test_shell_fragment_refreshes_header_count_and_mode(client: TestClient) -> None:
+    client.get("/")
+    shell = client.get("/shell", headers=HX).text
+    assert 'id="nav-approvals-count" hx-swap-oob="true" hidden' in shell and 'id="mode-pill" hx-swap-oob="true"' in shell
+    inject(client)
+    shell = client.get("/shell", headers=HX).text
+    assert 'aria-label="2 pending">2</span>' in shell
+    approval = rt(client).agent.list_approvals(sid(client))[0]
+    r = client.post(f"/approvals/{approval.id}/decline", headers=HX)
+    assert "plant-changed" in r.headers["hx-trigger"]  # the page then refetches /shell
+    assert 'aria-label="1 pending">1</span>' in client.get("/shell", headers=HX).text
+    full = client.get("/approvals").text
+    assert "Technical details" in full and "<summary>Technical details</summary>Idempotency key" in full
+
+
 def test_reset_clears_runs_and_holds(client: TestClient) -> None:
     client.get("/")
     inject(client)
     r = client.post("/session/reset", headers=HX)
     assert r.status_code == 200 and "No investigation running" in r.text
     assert rt(client).sessions.get(sid(client)).get_lot("L-2231").status == LotStatus.READY
+    # The audit trail survives a reset, so numbering continues rather than reusing R-7841.
+    inject(client)
+    assert rt(client).agent.list_runs(sid(client))[0].run_id == "R-7842"
 
 
 def test_mode_live_is_refused_with_reason_when_unavailable(client: TestClient) -> None:
@@ -154,9 +190,17 @@ def test_mode_live_is_refused_with_reason_when_unavailable(client: TestClient) -
 
 
 def test_chiller_fragment(client: TestClient) -> None:
-    r = client.get("/chillers/CH2")
+    r = client.get("/chillers/CH2", headers=HX)
     assert r.status_code == 200 and "Chiller 2 · Details" in r.text and "<html" not in r.text
-    assert client.get("/chillers/C2").status_code == 404
+    assert client.get("/chillers/C2", headers=HX).status_code == 404
+
+
+def test_direct_navigation_always_gets_the_page_shell(client: TestClient) -> None:
+    r = client.get("/chillers/CH2", headers={"Accept": "text/html"})
+    assert r.status_code == 200 and DISCLAIMER in r.text and "Chiller 2 · Details" in r.text  # overview, focused
+    missing = client.get("/no-such-page", headers={"Accept": "text/html"})
+    assert missing.status_code == 404 and DISCLAIMER in missing.text and "<html" in missing.text
+    assert client.get("/no-such-page").json() == {"detail": "No page here."}
 
 
 # --------------------------------------------------------------------------- errors and roles
@@ -225,35 +269,112 @@ def test_new_sessions_are_rate_limited_per_ip() -> None:
 # --------------------------------------------------------------------------- SSE
 
 
-def test_stream_shape_and_resume(client: TestClient) -> None:
+def _events(body: str) -> list[tuple[str, str]]:
+    """(event, id) pairs from an SSE body."""
+    out, event, eid = [], None, ""
+    for line in body.splitlines():
+        if line.startswith("event: "):
+            event = line[7:]
+        elif line.startswith("id: "):
+            eid = line[4:]
+        elif not line.strip() and event:
+            out.append((event, eid))
+            event, eid = None, ""
+    return out
+
+
+def test_stream_sends_one_event_per_step_with_its_approvals(client: TestClient) -> None:
     client.get("/")
     inject(client)
     run = rt(client).agent.list_runs(sid(client))[0]
     with client.stream("GET", f"/runs/{run.run_id}/stream") as r:
         assert r.headers["content-type"].startswith("text/event-stream")
         body = "".join(r.iter_text())
-    events = [line.split(": ", 1)[1] for line in body.splitlines() if line.startswith("event: ")]
-    assert events.count("step") == len(run.steps) == events.count("trace-step")
-    assert events.count("approval") == len(run.approvals)
-    assert events[-2:] == ["conclusion", "done"]
-    assert 'class="step' in body and 'class="tl"' in body
+    events = _events(body)
+    steps = [eid for ev, eid in events if ev == "step"]
+    assert steps == [str(s.n) for s in run.steps]  # exactly one event per step, ids are step numbers
+    assert [ev for ev, _ in events][-2:] == ["conclusion", "done"]
+    assert body.count('hx-swap-oob="beforeend:#agent-approvals"') >= 1
+    assert all(body.count(f'id="approval-{a.id}"') == 1 for a in run.approvals)  # carried once, with its step
+    with client.stream("GET", f"/runs/{run.run_id}/stream?view=trace") as r:
+        trace = _events("".join(r.iter_text()))
+    assert [eid for ev, eid in trace if ev == "trace-step"] == [str(s.n) for s in run.steps]
+    assert "approval" not in {ev for ev, _ in trace}
+
+
+def test_stream_resumes_after_the_snapshot_or_the_newest_reconnect_cursor(client: TestClient) -> None:
+    client.get("/")
+    inject(client)
+    run = rt(client).agent.list_runs(sid(client))[0]
     first_cited = {a.id: min(st.n for st in run.steps if a.id in st.evidence_ids) for a in run.approvals}
-    last_proposal = max(first_cited.values())
-    headers = {"Last-Event-ID": str(last_proposal)}
-    with client.stream("GET", f"/runs/{run.run_id}/stream", headers=headers) as r:
+    k = max(first_cited.values())
+    # A page that rendered k steps attaches with ?after=k: nothing it already shows is sent again.
+    with client.stream("GET", f"/runs/{run.run_id}/stream?after={k}") as r:
+        attached = "".join(r.iter_text())
+    ids = [int(eid) for ev, eid in _events(attached) if ev == "step"]
+    assert ids[0] == k + 1 and "approval-AP" not in attached
+    # On reconnect the browser repeats the same URL plus Last-Event-ID; the newer cursor wins.
+    with client.stream("GET", f"/runs/{run.run_id}/stream?after=2", headers={"Last-Event-ID": str(k)}) as r:
         resumed = "".join(r.iter_text())
-    ids = [int(line[4:]) for line in resumed.splitlines() if line.startswith("id: ")]
-    assert ids and min(ids) == last_proposal + 1
-    assert "event: approval" not in resumed  # already delivered with their steps before the reconnect
+    assert next(int(eid) for ev, eid in _events(resumed) if ev == "step") == k + 1
+    # Interrupted right after the step that queued an approval: that approval was delivered with it.
+    with client.stream("GET", f"/runs/{run.run_id}/stream", headers={"Last-Event-ID": str(k - 1)}) as r:
+        partial = "".join(r.iter_text())
+    late = [a for a, n in first_cited.items() if n == k]
+    assert late and all(f'id="approval-{a}"' in partial for a in late)
 
 
-def test_running_overview_connects_to_the_stream() -> None:
+def test_pages_attach_to_a_running_stream_after_their_snapshot() -> None:
     settings = WebSettings(secret_key=KEY)
     agent = AgentService(AgentSettings(replay_speed=1.0, live_enabled=False))
     with TestClient(create_app(settings, agent)) as c:
         c.get("/")
         html = c.post("/session/inject", data={"scenario": "probe_mismatch"}, headers=HX).text
         assert 'sse-connect="/runs/' in html and 'sse-close="done"' in html
+        run = rt(c).agent.list_runs(sid(c))[0]
+        overview = c.get("/").text
+        shown = overview.count('class="step ')
+        assert f"stream?view=panel&amp;after={shown}" in overview
+        page = c.get(f"/runs/{run.run_id}").text
+        assert f"/runs/{run.run_id}/stream?view=trace&amp;after=" in page
+
+
+# --------------------------------------------------------------------------- run admission (H4)
+
+
+def test_controls_are_refused_while_an_investigation_runs_and_leave_the_plant_untouched() -> None:
+    settings = WebSettings(secret_key=KEY)
+    agent = AgentService(AgentSettings(replay_speed=1.0, live_enabled=False))
+    with TestClient(create_app(settings, agent)) as c:
+        c.get("/")
+        assert c.post("/session/inject", data={"scenario": "probe_mismatch"}, headers=HX).status_code == 200
+        plant = rt(c).sessions.get(sid(c))
+        assert rt(c).agent.active_run(sid(c)) is not None
+        def controls_state():  # what an inject or stale would change; the running agent writes lots and audit
+            snap = plant.snapshot()
+            return snap.incident, snap.active_scenario, snap.physical_scenario, snap.alarms, plant._sim.offline
+
+        before = controls_state()
+        events = len(plant.audit_log(5000))
+        for path, data in (("/session/inject", {"scenario": "compressor_trip"}), ("/session/stale", {"tag": "TT-402"})):
+            r = c.post(path, data=data, headers=HX)
+            assert r.status_code == 409 and "still investigating" in r.headers["hx-trigger"], path
+        assert controls_state() == before
+        assert plant.latest(["TT-402"])["TT-402"].quality.value == "good"
+        assert [e.action for e in plant.audit_log(5000)[events:] if e.actor != "agent"] == []
+        assert len(rt(c).agent.list_runs(sid(c))) == 1
+
+
+def test_a_rate_limited_start_leaves_the_plant_untouched() -> None:
+    with make_client(runs_per_minute=1) as c:
+        c.get("/")
+        inject(c, "door_open")
+        plant = rt(c).sessions.get(sid(c))
+        incident, alarms = plant.snapshot().incident, plant.list_alarms(active_only=False)
+        r = c.post("/session/inject", data={"scenario": "compressor_trip"}, headers=HX)
+        assert r.status_code == 429
+        assert plant.snapshot().incident == incident and plant.list_alarms(active_only=False) == alarms
+        assert plant.snapshot().physical_scenario.value == "door_open"
 
 
 # --------------------------------------------------------------------------- headers, previews

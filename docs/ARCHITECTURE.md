@@ -68,19 +68,20 @@ sequenceDiagram
   B->>W: POST /session/inject {probe_mismatch}
   W->>P: inject(scenario)
   W->>A: start_run(session, plant, mode)
-  W-->>B: overview with sse-connect=/runs/R-…/stream
+  W-->>B: overview with sse-connect=/runs/R-…/stream?view=panel&after=n
   B->>W: GET /runs/R-…/stream (SSE)
   loop each step
     A->>P: tool call (tier-checked)
-    W-->>B: event step / trace-step / approval
+    W-->>B: event step (card + any approval it queued), id = step number
   end
   W-->>B: event conclusion, done (stream closes, page region re-renders)
   B->>W: POST /approvals/AP-…/approve
   W->>A: approve(…, "Shift Supervisor", plant)
-  A->>P: re-read source versions → execute once → audit
+  A->>P: one transaction: re-read evidence + precondition → execute once → audit
   B->>W: POST /session/stale {TT-402}
+  W->>A: active_run? (409 if an investigation is running; plant untouched)
   W->>P: make_stale
-  W->>A: revalidate_approvals → EXPIRED; start_run (stale recording)
+  W->>A: revalidate_approvals → EXPIRED (reason recorded); start_run (stale recording)
 ```
 
 ## The agent loop
@@ -93,25 +94,34 @@ run ends when the handover note is accepted or a bound is hit. Details are in
 [the agent README](../src/coldline/agent/README.md).
 
 **Replay** feeds recorded model turns through the same loop, so the tools, checks, holds and approvals are
-real for the visitor's sandbox while the model cost is zero. **Live** calls the API under the budget guard
-and falls back to replay, visibly, on any cap, timeout or error.
+real for the visitor's sandbox while the model cost is zero. Record ids (holds, approvals, alarms) are bound
+to the visitor's plant, and when the plant differs from the recording (scenarios chained in one sandbox),
+the handover is composed in code instead of reusing recorded wording. **Live** calls the API under the
+budget guard and falls back to replay, visibly, on any cap, timeout or error, keeping what the live part
+already did.
 
 ## Streaming
 
-`GET /runs/{id}/stream` is server-sent events. Each step is sent twice, as an agent-panel card (`step`)
-and a run-page timeline row (`trace-step`), both with the step number as the event id. A proposal is sent
-(`approval`) with the step that queued it. The stream ends with `conclusion` and `done`; the page closes
-the connection on `done` and re-renders its region so totals, holds and the mimic are final. A reconnect
-sends `Last-Event-ID` and resumes after the last step the browser saw.
+`GET /runs/{id}/stream` is server-sent events, exactly one event per step with the step number as its id:
+an agent-panel card (`step`, `view=panel`) that also carries, out of band, any approval card the step
+queued, or a run-page timeline row (`trace-step`, `view=trace`). The stream ends with `conclusion` and
+`done`; the page closes the connection on `done` and re-renders its region so totals, holds and the mimic
+are final. A page opened mid-run renders the steps so far and attaches with `?after=<that count>`; a
+reconnect sends `Last-Event-ID`, and the newer of the two cursors wins, so nothing is skipped or repeated.
+The browser also drops any fragment whose element id is already on the page. A stream for a run that is not
+in the session (for example after a reset) waits a moment for registration, then ends with `done` /
+`missing` instead of a 404, so the browser closes it rather than retrying. The header (approvals count,
+mode, clock) sits outside the swapped regions; actions announce `plant-changed` and the page refetches it
+as out-of-band fragments from `GET /shell`.
 
 ## State and lifecycle
 
 | State | Where | Lifetime |
 |---|---|---|
-| Visitor sandbox (plant, lots, work orders, holds, audit) | `SessionManager` | 2 h idle TTL, 200 sandboxes max (oldest evicted) |
-| Runs, approvals | `AgentService`, keyed by session | Dropped when the sandbox expires or is evicted |
+| Visitor sandbox (plant, lots, work orders, holds, audit) | `SessionManager` | 2 h idle TTL, 200 sandboxes max (least recently used evicted, never one with a running investigation; 20 per client address); audit trail and record history bounded per sandbox |
+| Runs, approvals | `AgentService`, keyed by session | 25 runs per session; decided approvals no retained run references are pruned; all dropped when the sandbox expires or is evicted |
 | Mode, approver role, focused chiller | `Runtime.prefs` | Same as the sandbox |
-| Daily live spend | `BudgetGuard`, persisted to `$COLDLINE_DATA_DIR` | UTC day |
+| Daily live spend, outstanding reservations, unreconciled spend | `BudgetGuard`, journalled atomically to `$COLDLINE_DATA_DIR` | UTC day |
 
 All of it is in memory in one process, deliberately: a public demo needs isolation and a hard ceiling on
 memory more than durability. [ADR 0004](adr/0004-in-memory-per-visitor-sandboxes.md) records the trade-off

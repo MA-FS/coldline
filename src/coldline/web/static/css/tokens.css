@@ -22,8 +22,8 @@
   /* text */
   --text-1: #e8ebee;  /* primary values */
   --text-2: #b6bdc5;  /* labels, body */
-  --text-3: #8a939d;  /* secondary, units, axes */
-  --text-4: #626b75;  /* disabled, stale */
+  --text-3: #8a939d;  /* secondary text that must stay readable: >= 4.5:1 on bg-0..bg-2 */
+  --text-4: #626b75;  /* decoration only (markers, dashed rules, icons, disabled); never for text to read */
 
   /* process (normal state) */
   --proc: #9aa3ac;         /* equipment outlines, pipes */

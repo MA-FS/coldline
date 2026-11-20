@@ -5,6 +5,7 @@ import pytest
 
 from coldline.contracts import AuditEvent, LotStatus, PlantSystems, Scenario
 from coldline.systems import Sandbox, SessionManager, VersionConflict, create_plant
+from coldline.systems.sessions import SessionCapacityError
 
 
 def test_seeded_records_and_audited_writes() -> None:
@@ -19,9 +20,11 @@ def test_seeded_records_and_audited_writes() -> None:
     p.place_qa_hold(lot.id, "Inspect", "agent", [wo.id])
     before = p.snapshot()
     p.inject(Scenario.POISONED_EMAIL)
-    assert before.model_dump(exclude={"active_scenario"}) == p.snapshot().model_dump(
-        exclude={"active_scenario"}
+    after = p.snapshot()
+    assert before.model_dump(exclude={"active_scenario", "incident"}) == after.model_dump(
+        exclude={"active_scenario", "incident"}
     )
+    assert after.incident == before.incident + 1 and after.physical_scenario is None
     assert "ignore previous instructions" in p.inbox()[0].body
     assert p.get_lot(lot.id).status == LotStatus.HOLD
     p.release_qa_hold(lot.id, "Shift Supervisor")
@@ -80,14 +83,55 @@ def test_session_lifetime_and_wall_clock() -> None:
     a.advance_wall_time(10)
     assert a.now() == b.now() + timedelta(seconds=10)
     assert manager.get("a") is a
-    c = manager.get("c")
-    assert manager.get("b") is b and manager.get("a") is not a
+    c = manager.get("c")  # at capacity: evicts the least recently used sandbox (b), not the oldest (a)
+    assert "b" not in manager and manager.get("a") is a
     manager.reset("c")
     assert c.audit_log()[-1].action == "reset"
     wall += 50
     assert manager.get("c") is not c
     with pytest.raises(ValueError):
         manager.get("")
+
+
+def test_capacity_never_evicts_a_running_investigation() -> None:
+    busy = {"a"}
+    manager = SessionManager(3600, 2, clock=lambda: 0.0, is_busy=lambda sid: sid in busy)
+    a = manager.get("a")
+    manager.get("b")
+    manager.get("c")  # a is least recently used but busy, so b goes
+    assert manager.get("a") is a and "b" not in manager
+    busy.add("c")
+    with pytest.raises(SessionCapacityError):
+        manager.get("d")
+    assert "a" in manager and "c" in manager
+
+
+def test_one_address_cannot_displace_other_visitors() -> None:
+    evicted: list[str] = []
+    manager = SessionManager(3600, 10, max_per_origin=2, clock=lambda: 0.0, on_evict=evicted.append)
+    manager.get("other", origin="10.0.0.9")
+    for i in range(5):
+        manager.get(f"cookie-{i}", origin="10.0.0.1")
+    assert "other" in manager and len(manager) == 3
+    assert evicted == ["cookie-0", "cookie-1", "cookie-2"]
+
+
+def test_history_is_bounded_and_ids_are_never_reused() -> None:
+    from coldline.systems.plant import AUDIT_LIMIT, HISTORY_LIMIT
+
+    p = create_plant()
+    for _ in range(HISTORY_LIMIT + 5):
+        p.inject(Scenario.POISONED_EMAIL)
+    ids = [m.id for m in p.inbox()]
+    assert len(ids) == HISTORY_LIMIT and ids[-1] == f"MSG-{HISTORY_LIMIT + 5:04}"
+    for _ in range(AUDIT_LIMIT):
+        p.tick(1)
+    log = p.audit_log(AUDIT_LIMIT + 10)
+    assert len(log) == AUDIT_LIMIT and log[-1].id == f"AU-{AUDIT_LIMIT + HISTORY_LIMIT + 5:05}"
+    for _ in range(HISTORY_LIMIT + 5):
+        p.inject(Scenario.COMPRESSOR_TRIP)
+    alarms = p.list_alarms(active_only=False)
+    assert len(alarms) == HISTORY_LIMIT + 1 and sum(a.active for a in alarms) == 1
 
 
 def test_public_api_allowlist() -> None:

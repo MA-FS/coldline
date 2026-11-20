@@ -3,13 +3,24 @@
 The agent never executes these actions. An APPROVE-tier tool produces a :class:`Proposal`; this module
 turns it into an :class:`Approval` bound to:
 
-* ``source_versions``: a version (or content fingerprint) of every record the proposal relied on, and
+* ``source_versions``: the evidence the proposal relied on, one categorical value per source. Records
+  (lots, work orders) contribute their version, which moves on every hold, release, dispatch change or
+  amendment. Probes contribute their quality (good, stale, bad). The chiller contributes its code-computed
+  evidence verdict, so "probes disagree" becoming "confirmed excursion" is a change even while both probes
+  stay fresh. A release names the exact hold it releases. Every proposal also binds to the plant's
+  incident generation, which moves on every fault injection and reset. Ordinary sampling noise moves none
+  of these, so proposals expire only on a change a person would care about.
 * ``idempotency_key``: a stable hash of who proposed what, in which run.
 
-``approve()`` re-reads those versions. If any changed (a work order was amended, a probe went stale, a lot
-was rescheduled) the approval becomes ``EXPIRED`` and nothing runs. Otherwise the action executes exactly
-once and the audit event is written under the same lock, so a double click or a retried request cannot
-apply it twice. ``decline()`` only records the decision.
+``approve()`` re-reads those values and re-checks the action's own preconditions (a new dispatch time must
+still be in the future) inside one sandbox transaction, then executes and audits under the same locks. If
+anything changed, the approval becomes ``EXPIRED`` with the reason, and nothing runs. A double click or a
+retried request cannot apply an action twice. ``decline()`` needs the same authority as ``approve()`` and
+only records the decision. ``revalidate()`` applies the same check without a click, so expiry shows as soon
+as the evidence changes.
+
+A second run proposing the same action on the same, still-valid evidence reuses the pending approval and
+adds its run id to ``run_ids``, so one decision settles every run that asked for it.
 """
 
 from __future__ import annotations
@@ -17,7 +28,6 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,15 +35,19 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from coldline.contracts import Approval, ApprovalStatus, AuditEvent, LotStatus, PlantSystems, Quality
+from coldline.agent.evidence import Verdict, assess_chiller
+from coldline.contracts import Approval, ApprovalStatus, AuditEvent, PlantSystems, Quality
 from coldline.sim import analysis
+
+INCIDENT = "incident"  # source_versions key for the plant's incident generation
+RESOLVED_KEEP = 100  # decided approvals kept per session beyond those the retained runs reference
 
 
 @dataclass(frozen=True)
 class Source:
-    """A record an approval depends on. ``asset_id`` locates work orders (looked up per asset)."""
+    """Evidence an approval depends on. ``asset_id`` locates work orders and the lot a hold belongs to."""
 
-    kind: str  # "work_order" | "lot" | "probe"
+    kind: str  # "work_order" | "lot" | "probe" | "verdict" | "hold" | "incident"
     record_id: str
     asset_id: str | None = None
 
@@ -56,31 +70,51 @@ class ApprovalResult(BaseModel):
 
 
 _PROBE_STATE = {Quality.GOOD: 1, Quality.STALE: 2, Quality.BAD: 3}
-
-
-def _fingerprint(*parts: object) -> int:
-    """Short content hash for records that carry no version field."""
-    return zlib.crc32("|".join(str(p) for p in parts).encode()) % 1_000_000
+_VERDICTS = list(Verdict)
 
 
 def record_version(systems: PlantSystems, source: Source) -> int:
-    """Current version of a source record. Records without a version field get a content fingerprint."""
+    """Current value of one source. ``-1`` means the record no longer exists (always a change)."""
     try:
         if source.kind == "work_order":
             orders = systems.find_work_orders(source.asset_id or "", open_only=False)
             wo = next((w for w in orders if w.id == source.record_id), None)
             return -1 if wo is None else wo.version
         if source.kind == "lot":
-            lot = systems.get_lot(source.record_id)
-            due = lot.dispatch_due.isoformat() if lot.dispatch_due else ""
-            return _fingerprint(due, lot.status == LotStatus.DISPATCHED)
+            return systems.get_lot(source.record_id).version
         if source.kind == "probe":
             # A probe's evidence "version" is its quality: good -> stale invalidates the comparison.
             reading = systems.latest([source.record_id])[source.record_id]
             return _PROBE_STATE[analysis.freshness(reading, systems.now())]
+        if source.kind == "verdict":
+            return _VERDICTS.index(assess_chiller(systems, source.record_id).verdict) + 1
+        if source.kind == "hold":
+            hold = systems.active_hold(source.asset_id or "")
+            return 1 if hold is not None and hold.id == source.record_id else -1
+        if source.kind == INCIDENT:
+            return systems.snapshot().incident
     except (KeyError, ValueError):
         return -1
     raise ValueError(f"unknown source kind {source.kind!r}")
+
+
+def describe_change(source: Source, old: int, new: int) -> str:
+    """One readable clause per changed source, for the expiry message and the audit log."""
+    rid = source.record_id
+    if source.kind == INCIDENT:
+        return "a new fault was injected or the plant was reset (incident changed)"
+    if source.kind == "probe":
+        names = {v: q.value for q, v in _PROBE_STATE.items()}
+        return f"{rid} went from {names.get(old, '?')} to {names.get(new, 'missing')}"
+    if source.kind == "verdict":
+        def name(v: int) -> str:
+            return _VERDICTS[v - 1].value.replace("_", " ") if 0 < v <= len(_VERDICTS) else "unknown"
+        return f"{rid} evidence check went from '{name(old)}' to '{name(new)}'"
+    if source.kind == "hold":
+        return f"{rid} is no longer the active hold on {source.asset_id}"
+    if new == -1:
+        return f"{rid} no longer exists"
+    return f"{rid} changed (v{old} -> v{new})"
 
 
 # --------------------------------------------------------------------------- executors
@@ -113,11 +147,18 @@ APPROVER_ROLES: dict[str, tuple[str, ...]] = {
 }
 
 
+def precondition_failure(approval: Approval, systems: PlantSystems) -> str:
+    """Checks that depend on the clock or on the action itself, repeated at decision time."""
+    if approval.action == "change_dispatch":
+        due = datetime.fromisoformat(approval.payload["new_due"])
+        if due <= systems.now():
+            return f"the proposed dispatch time {due:%H:%M} has already passed"
+    return ""
+
+
 def role_allowed(actor: str, roles: tuple[str, ...]) -> bool:
-    who = actor.casefold().strip()
-    if who in {"", "agent", "system"}:
-        return False  # the agent can never approve its own proposals
-    return any(role.casefold() in who for role in roles)
+    """Exact role match. The agent and system identities never hold an approver role."""
+    return actor in roles and actor.casefold() not in {"agent", "system"}
 
 
 @dataclass
@@ -145,15 +186,22 @@ class ApprovalStore:
         return [a for a in items if status is None or a.status == status]
 
     def propose(self, *, run_id: str, systems: PlantSystems, proposal: Proposal) -> tuple[Approval, bool]:
-        """Create (or return the identical pending) approval. Returns ``(approval, created)``."""
-        with self._lock:
-            for existing in self._items.values():
-                if (
-                    existing.status == ApprovalStatus.PENDING
-                    and existing.action == proposal.action
-                    and existing.payload == proposal.payload
-                ):
-                    return existing, False
+        """Create an approval, or reuse a pending one for the same action on still-valid evidence.
+
+        Returns ``(approval, created)``.
+        """
+        with self._lock, systems.transaction():
+            for existing in list(self._items.values()):
+                if (existing.status != ApprovalStatus.PENDING or existing.action != proposal.action
+                        or existing.payload != proposal.payload):
+                    continue
+                reason = self._stale_reason(existing, systems)
+                if reason:
+                    self._expire(existing, "system", systems, reason)
+                    continue
+                if run_id not in existing.run_ids:
+                    existing.run_ids.append(run_id)
+                return existing, False
             versions = {s.record_id: record_version(systems, s) for s in proposal.sources}
             key_material = json.dumps(
                 {"session": self.session_id, "run": run_id, "action": proposal.action,
@@ -164,6 +212,7 @@ class ApprovalStore:
             approval = Approval(
                 id=self.next_id(),
                 run_id=run_id,
+                run_ids=[run_id],
                 action=proposal.action,
                 title=proposal.title,
                 rationale=proposal.rationale,
@@ -178,35 +227,30 @@ class ApprovalStore:
             return approval, True
 
     def approve(self, approval_id: str, actor: str, systems: PlantSystems) -> ApprovalResult:
-        with self._lock:
+        with self._lock, systems.transaction():
             approval = self._items[approval_id]
             if approval.status == ApprovalStatus.APPROVED:
                 return ApprovalResult(approval=approval, executed=False,
                                       message="Already approved; not executed again.")
             if approval.status != ApprovalStatus.PENDING:
+                why = f" ({approval.note})" if approval.note else ""
                 return ApprovalResult(approval=approval, executed=False,
-                                      message=f"Approval is {approval.status.value}; nothing was executed.")
-            meta = self._meta[approval_id]
-            if not role_allowed(actor, meta.approver_roles):
-                raise PermissionError(
-                    f"{approval.action} needs approval by {' or '.join(meta.approver_roles)}, not {actor!r}"
-                )
-            current = {s.record_id: record_version(systems, s) for s in meta.sources}
-            changed = sorted(r for r, v in approval.source_versions.items() if current.get(r) != v)
-            if changed:
-                self._decide(approval, ApprovalStatus.EXPIRED, actor, systems)
-                detail = f"source records changed since proposal: {', '.join(changed)}"
-                self._audit(systems, approval, actor, "approval_expired", detail)
+                                      message=f"Approval is {approval.status.value}{why}; nothing was executed.")
+            self._check_role(approval, actor)
+            reason = self._stale_reason(approval, systems)
+            if reason:
+                self._expire(approval, actor, systems, reason)
                 return ApprovalResult(
                     approval=approval,
                     executed=False,
-                    message=f"Expired: {detail}. Nothing was executed; re-run the investigation.",
+                    message=f"Expired: {reason}. Nothing was executed; re-run the investigation.",
                 )
             if approval.idempotency_key not in self._executed:
                 try:
                     EXECUTORS[approval.action](systems, approval, actor)
                 except (ValueError, LookupError, PermissionError) as exc:  # version conflict, missing record
                     self._decide(approval, ApprovalStatus.EXPIRED, actor, systems)
+                    approval.note = str(exc)
                     self._audit(systems, approval, actor, "approval_failed", str(exc))
                     return ApprovalResult(approval=approval, executed=False, message=f"Not executed: {exc}")
                 self._executed.add(approval.idempotency_key)
@@ -215,38 +259,71 @@ class ApprovalStore:
             return ApprovalResult(approval=approval, executed=True, message="Approved and executed.")
 
     def revalidate(self, systems: PlantSystems, actor: str = "system") -> list[Approval]:
-        """Expire every pending approval whose source records changed. Returns the ones that expired.
+        """Expire every pending approval whose evidence changed. Returns the ones that expired.
 
         ``approve()`` performs the same check, so this only makes expiry visible as soon as the evidence
         changes instead of when someone next clicks Approve.
         """
         expired: list[Approval] = []
-        with self._lock:
+        with self._lock, systems.transaction():
             for approval in self._items.values():
                 if approval.status != ApprovalStatus.PENDING:
                     continue
-                meta = self._meta[approval.id]
-                current = {s.record_id: record_version(systems, s) for s in meta.sources}
-                changed = sorted(r for r, v in approval.source_versions.items() if current.get(r) != v)
-                if changed:
-                    self._decide(approval, ApprovalStatus.EXPIRED, actor, systems)
-                    detail = f"source records changed since proposal: {', '.join(changed)}"
-                    self._audit(systems, approval, actor, "approval_expired", detail)
+                reason = self._stale_reason(approval, systems)
+                if reason:
+                    self._expire(approval, actor, systems, reason)
                     expired.append(approval)
         return expired
 
     def decline(self, approval_id: str, actor: str, systems: PlantSystems, reason: str = "") -> ApprovalResult:
-        with self._lock:
+        with self._lock, systems.transaction():
             approval = self._items[approval_id]
             if approval.status != ApprovalStatus.PENDING:
                 return ApprovalResult(approval=approval, executed=False,
                                       message=f"Approval is {approval.status.value}; nothing changed.")
+            self._check_role(approval, actor)
             self._decide(approval, ApprovalStatus.DECLINED, actor, systems)
             self._audit(systems, approval, actor, "decline", reason or approval.title)
             return ApprovalResult(approval=approval, executed=False,
                                   message="Declined. No business system was changed.")
 
+    def prune(self, keep_run_ids: set[str], keep_resolved: int = RESOLVED_KEEP) -> None:
+        """Drop decided approvals that no retained run references, beyond the newest ``keep_resolved``.
+
+        Pending approvals are always kept: a person may still decide them.
+        """
+        with self._lock:
+            resolved = [a for a in self._items.values() if a.status != ApprovalStatus.PENDING]
+            orphans = [a for a in resolved if not set(a.run_ids or [a.run_id]) & keep_run_ids]
+            for a in orphans[: max(0, len(orphans) - keep_resolved)]:
+                self._items.pop(a.id, None)
+                self._meta.pop(a.id, None)
+                self._executed.discard(a.idempotency_key)
+
     # ------------------------------------------------------------------ helpers
+
+    def _check_role(self, approval: Approval, actor: str) -> None:
+        roles = self._meta[approval.id].approver_roles
+        if not role_allowed(actor, roles):
+            raise PermissionError(f"{approval.action} needs a decision by {' or '.join(roles)}, not {actor!r}")
+
+    def _stale_reason(self, approval: Approval, systems: PlantSystems) -> str:
+        """Why this approval can no longer be executed, or "" if its evidence still holds."""
+        changes = []
+        for source in self._meta[approval.id].sources:
+            old = approval.source_versions.get(source.record_id)
+            new = record_version(systems, source)
+            if old != new:
+                changes.append(describe_change(source, old if old is not None else -1, new))
+        precondition = precondition_failure(approval, systems)
+        if precondition:
+            changes.append(precondition)
+        return "; ".join(changes)
+
+    def _expire(self, approval: Approval, actor: str, systems: PlantSystems, reason: str) -> None:
+        self._decide(approval, ApprovalStatus.EXPIRED, actor, systems)
+        approval.note = reason
+        self._audit(systems, approval, actor, "approval_expired", f"evidence changed since proposal: {reason}")
 
     @staticmethod
     def _decide(approval: Approval, status: ApprovalStatus, actor: str, systems: PlantSystems) -> None:

@@ -102,8 +102,8 @@ async def test_stream_and_sse_events_follow_a_running_replay() -> None:
     run = await svc.start_run("s1", p)
     assert run.status == RunStatus.RUNNING
     assert (await svc.start_run("s1", p)).run_id == run.run_id  # one run per session at a time
-    streamed = [s.n async for s in svc.stream(run.run_id)]
-    events = [e async for e in svc.stream_events(run.run_id)]
+    streamed = [s.n async for s in svc.stream("s1", run.run_id)]
+    events = [e async for e in svc.stream_events("s1", run.run_id)]
     assert streamed == [s.n for s in run.steps]
     assert [e["event"] for e in events][-1] == "done" and len(events) == len(run.steps) + 1
     assert "model_turns" not in json.loads(events[-1]["data"])["extra"]
@@ -237,7 +237,7 @@ async def test_forget_session_drops_state() -> None:
     svc, p = replay_service(), plant(Scenario.DOOR_OPEN)
     run = await svc.run_to_completion("gone", p)
     svc.forget_session("gone")
-    assert svc.get_run(run.run_id) is None and svc.list_runs("gone") == []
+    assert svc.get_run("gone", run.run_id) is None and svc.list_runs("gone") == []
 
 
 async def test_concurrent_sessions_are_isolated() -> None:

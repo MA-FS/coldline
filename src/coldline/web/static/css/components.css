@@ -25,12 +25,13 @@
 .kpi-unit { font-size: var(--fs-md); color: var(--text-3); font-weight: var(--fw-regular); letter-spacing: 0; }
 .kpi-note { color: var(--text-3); font-size: var(--fs-sm); }
 .kpi-baseline { color: var(--text-3); font-size: var(--fs-sm); }
-.kpi-baseline s { color: var(--text-4); }
+.kpi-baseline s { color: var(--text-3); }
 .kpi .spark { margin-top: 2px; }
 .kpi--amber .kpi-value { color: var(--amber); }
 .kpi--red .kpi-value { color: var(--red); }
 .kind { font-size: 10px; letter-spacing: var(--track-caps); text-transform: uppercase; font-weight: var(--fw-semibold); color: var(--text-3); border: 1px solid var(--line); border-radius: var(--r-1); padding: 0 5px; height: 17px; display: inline-flex; align-items: center; white-space: nowrap; }
 .kind--estimate { border-style: dashed; }
+.kind--recorded { border-style: dotted; }
 
 /* ------------------------------------------------------------------ badges */
 .badge { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: var(--r-pill); font-size: 12px; font-weight: var(--fw-medium); border: 1px solid var(--line); color: var(--text-2); background: var(--bg-2); white-space: nowrap; }
@@ -66,6 +67,7 @@
 .btn:hover { background: var(--bg-3); text-decoration: none; }
 .btn:active { transform: translateY(1px); }
 .btn[disabled], .btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; transform: none; }
+.menu-item[disabled] { opacity: .5; cursor: not-allowed; }
 .btn--primary { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
 .btn--primary:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn--approve { background: var(--accent-strong); border-color: var(--accent-strong); color: #fff; }
@@ -102,7 +104,16 @@
 .menu-label { padding: 6px 10px 4px; }
 
 /* ------------------------------------------------------------------ data table */
-.table-wrap { overflow-x: auto; }
+/* Scroll shadows: an edge shade appears only on the side with more content (the shades scroll with the
+   content and cover the fixed ones at each end), so a wide table reads as scrollable, not clipped. */
+.table-wrap, .scroll-x {
+  overflow-x: auto;
+  background:
+    linear-gradient(to right, var(--bg-1) 30%, transparent) left center / 32px 100% no-repeat local,
+    linear-gradient(to left, var(--bg-1) 30%, transparent) right center / 32px 100% no-repeat local,
+    linear-gradient(to right, rgba(0, 0, 0, .35), transparent) left center / 14px 100% no-repeat scroll,
+    linear-gradient(to left, rgba(0, 0, 0, .35), transparent) right center / 14px 100% no-repeat scroll;
+}
 .table { width: 100%; border-collapse: collapse; font-size: var(--fs-md); font-variant-numeric: tabular-nums; }
 .table th { text-align: left; color: var(--text-2); font-weight: var(--fw-semibold); font-size: var(--fs-sm); padding: 9px var(--s-4); border-bottom: 1px solid var(--line); background: var(--bg-2); white-space: nowrap; }
 .table td.mono { white-space: nowrap; }
@@ -129,7 +140,7 @@
 .tagval .val { color: var(--text-1); font-weight: var(--fw-semibold); }
 .val--amber { color: var(--amber) !important; }
 .val--red { color: var(--red) !important; }
-.val--stale { color: var(--text-4) !important; font-style: italic; }
+.val--stale { color: var(--text-3) !important; font-style: italic; }
 .stale-mark { font-family: var(--font-mono); font-size: 10px; font-weight: var(--fw-bold); letter-spacing: 0.08em; color: var(--text-3); border: 1px dashed var(--stale); border-radius: var(--r-1); padding: 0 4px; background: var(--stale-hatch); }
 
 /* ------------------------------------------------------------------ evidence chips / citations */
@@ -160,8 +171,8 @@
 .step-call::before { content: "›"; color: var(--text-4); margin-right: 6px; }
 .step-call .fn { color: var(--text-1); }
 .obs { margin-top: 8px; background: var(--bg-inset); border: 1px solid var(--line-soft); border-radius: var(--r-1); padding: 8px 10px; font-family: var(--font-mono); font-size: 12px; color: var(--text-2); line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-.obs::before { content: "obs: "; color: var(--text-4); }
-.step-meta { display: flex; gap: var(--s-3); margin-top: 8px; color: var(--text-4); font-family: var(--font-mono); font-size: 11px; flex-wrap: wrap; }
+.obs::before { content: "obs: "; color: var(--text-3); }
+.step-meta { display: flex; gap: var(--s-3); margin-top: 8px; color: var(--text-3); font-family: var(--font-mono); font-size: 11px; flex-wrap: wrap; }
 .step--guardrail { border-color: var(--line-strong); background: linear-gradient(90deg, var(--accent-weak), transparent 55%), var(--bg-2); }
 .step--guardrail .step-n { border-color: var(--accent); color: var(--accent); }
 .step--guardrail.step--blocked { background: linear-gradient(90deg, var(--red-weak), transparent 55%), var(--bg-2); border-color: var(--red-line); }
@@ -194,7 +205,9 @@
 .approval-rationale { color: var(--text-2); font-size: var(--fs-md); margin: 0; }
 .approval-payload { font-family: var(--font-mono); font-size: 12px; background: var(--bg-inset); border: 1px solid var(--line-soft); border-radius: var(--r-1); padding: 8px 10px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
 .approval-actions { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; }
-.approval-actions .fine { color: var(--text-4); font-size: var(--fs-xs); margin-left: auto; font-family: var(--font-mono); }
+.approval-tech { font-size: var(--fs-xs); color: var(--text-3); }
+.approval-tech > summary { cursor: pointer; width: max-content; }
+.approval-tech code { font-family: var(--font-mono); color: var(--text-2); word-break: break-all; }
 .approval--approved { border-left-color: var(--ok); }
 .approval--declined { border-left-color: var(--line-strong); }
 .approval--expired { border-left-color: var(--line); border-style: dashed; border-left-style: solid; background: var(--bg-1); }
@@ -244,9 +257,9 @@
 .chart-event-label { fill: var(--text-3); font-size: 9.5px; }
 .chart-event-label--amber { fill: var(--amber); }
 .chart-limit { stroke: var(--text-4); stroke-dasharray: 6 3; stroke-width: 1; }
-.chart-limit-label { fill: var(--text-4); font-size: 9.5px; }
+.chart-limit-label { fill: var(--text-3); font-size: 9.5px; }
 .chart-stale-label { fill: var(--text-3); font-size: 9px; font-weight: 700; letter-spacing: .08em; }
-.chart-empty { fill: var(--text-4); font-size: 12px; }
+.chart-empty { fill: var(--text-3); font-size: 12px; }
 .trend { display: flex; flex-direction: column; gap: 2px; }
 .trend-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 .trend-tag { color: var(--text-1); font-weight: var(--fw-semibold); font-size: var(--fs-md); }

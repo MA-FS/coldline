@@ -38,6 +38,6 @@
   {% endif %}
 </section>
 <div style="margin-top: var(--s-5)">
-  {% call ui.note("", "lock") %}<b class="strong">How approval works.</b> Approve executes the proposal exactly once (idempotency key) and writes an audit event in the same step. Decline records the decision and executes nothing. The agent can never approve its own proposals, and text from emails or tickets cannot raise an action's tier.{% endcall %}
+  {% call ui.note("", "lock") %}<b class="strong">How approval works.</b> Approve re-checks the evidence the proposal relied on (record versions, probe quality, the evidence verdict, the incident) and expires it if anything changed; otherwise it executes exactly once (idempotency key) and writes an audit event in the same step. Decline needs the same role and executes nothing. The agent can never decide its own proposals, and text from emails or tickets cannot raise an action's tier.{% endcall %}
 </div>
 {% endblock %}

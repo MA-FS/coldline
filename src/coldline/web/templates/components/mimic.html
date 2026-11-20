@@ -65,7 +65,7 @@
     {% set cx = x + 58 %}
     {% set tone = c.alarm %}
     <path d="M{{ cx }},104 V130" class="m-pipe" marker-end="url(#m-arrow)"/>
-    <g class="m-unit" id="m-{{ c.id }}" tabindex="0" role="button" aria-selected="{{ 'true' if c.id == selected else 'false' }}"
+    <g class="m-unit" id="m-{{ c.id }}" tabindex="0" role="button" aria-pressed="{{ 'true' if c.id == selected else 'false' }}"
        aria-label="{{ c.name }}{% for t in c.tags %}, {{ t.tag }} {{ t.value }} °C{% if t.tone == 'stale' %} stale{% endif %}{% endfor %}{% if c.badge %}, alarm: {{ c.badge|lower }}{% endif %}"
        hx-get="{{ prefix }}/chillers/{{ c.id }}" hx-target="#chiller-detail" hx-swap="outerHTML" hx-trigger="click">
       <rect x="{{ x }}" y="140" width="116" height="206" rx="4" class="m-frame{% if tone %} m-frame--{{ tone }}{% endif %}"/>

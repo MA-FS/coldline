@@ -45,6 +45,7 @@ class AgentSettings:
     api_key_present: bool = False
     daily_usd_cap: float = 3.00  # global spend ceiling across all visitors, per UTC day
     session_runs_per_hour: int = 3  # live runs per visitor session per rolling hour
+    origin_runs_per_day: int = 6  # live runs per client address per rolling day (all its sessions)
     max_concurrent_live: int = 2
     max_model_calls: int = 8  # hard ceiling on model calls per run
     max_tokens_per_call: int = 3000
@@ -69,6 +70,7 @@ class AgentSettings:
             api_key_present=bool(env.get("ANTHROPIC_API_KEY", "").strip()),
             daily_usd_cap=_float(env, "COLDLINE_DAILY_USD_CAP", 3.00),
             session_runs_per_hour=_int(env, "COLDLINE_SESSION_RUNS_PER_HOUR", 3),
+            origin_runs_per_day=_int(env, "COLDLINE_ORIGIN_RUNS_PER_DAY", 6),
             max_concurrent_live=_int(env, "COLDLINE_MAX_CONCURRENT_LIVE", 2),
             max_model_calls=_int(env, "COLDLINE_MAX_MODEL_CALLS", 8),
             max_tokens_per_call=_int(env, "COLDLINE_MAX_TOKENS_PER_CALL", 3000),

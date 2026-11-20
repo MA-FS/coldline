@@ -34,7 +34,7 @@ from coldline.web.runtime import ROLES, Runtime, Visitor
 from coldline.web.views import chiller_detail, citations, evidence_kind, fmt_value, plant_view, probe_tags
 
 CHILLER_NAMEPLATE = {"capacity_carcases": 160, "status": "In service"}
-FINISHED = {RunStatus.DONE, RunStatus.AWAITING_APPROVAL, RunStatus.FAILED}
+FINISHED = {RunStatus.DONE, RunStatus.AWAITING_APPROVAL, RunStatus.INCOMPLETE, RunStatus.FAILED}
 
 
 # --------------------------------------------------------------------------- shell
@@ -42,7 +42,7 @@ FINISHED = {RunStatus.DONE, RunStatus.AWAITING_APPROVAL, RunStatus.FAILED}
 
 def shell(rt: Runtime, v: Visitor, active: str, title: str) -> dict[str, Any]:
     """Base context plus what the shell shows about this visitor: mode, live budget, role, pending count."""
-    status = rt.agent.live_status(v.sid)
+    status = rt.agent.live_status(v.sid, v.ip)
     pending = len(rt.agent.list_approvals(v.sid, ApprovalStatus.PENDING))
     ctx = base_context(
         active,
@@ -89,13 +89,22 @@ def default_focus(alarms: list[Alarm], chillers: list[str]) -> str:
     return "CH4" if "CH4" in chillers else chillers[0]
 
 
-def detail_context(plant: PlantSystems, focus: str | None) -> tuple[Any, dict[str, Any]]:
+def run_zones(run: RunTrace | None) -> list[str]:
+    """Chillers an investigation looked at (its lot lookups), else the asset its panel names."""
+    if run is None:
+        return []
+    zones = [entry.split(":", 1)[1] for entry in run.extra.get("lookups", []) if entry.startswith("lots:")]
+    return zones or [run.extra.get("asset_id", "")]
+
+
+def detail_context(plant: PlantSystems, focus: str | None,
+                   run: RunTrace | None = None) -> tuple[Any, dict[str, Any]]:
     """(PlantView, chiller detail dict) for the mimic and the detail panel."""
     snap = plant.snapshot()
     chillers = [a for a in snap.assets if a.kind == AssetKind.CHILLER]
     tags = [t for a in chillers for t in probe_tags(a)]
     trends = plant.get_trend(tags, 60)
-    pv = plant_view(snap, trends)
+    pv = plant_view(snap, trends, run_zones(run))
     ids = [a.id for a in chillers]
     focus = focus if focus in ids else default_focus(snap.alarms, ids)
     asset = next(a for a in chillers if a.id == focus)
@@ -108,8 +117,8 @@ def detail_context(plant: PlantSystems, focus: str | None) -> tuple[Any, dict[st
 
 
 def overview(rt: Runtime, v: Visitor) -> dict[str, Any]:
-    pv, detail = detail_context(v.plant, v.prefs.focus)
     run = latest_run(rt, v.sid)
+    pv, detail = detail_context(v.plant, v.prefs.focus, run)
     every = rt.agent.list_approvals(v.sid)
     # The panel shows this run's proposals; older ones stay on the Approvals page (and in the nav count).
     approvals = [a for a in every if run is not None and a.run_id == run.run_id]
@@ -301,8 +310,13 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
     runs = [r for r in agent.list_runs(sid) if r.status in FINISHED and r.status != RunStatus.FAILED]
     approvals = agent.list_approvals(sid)
     events = plant.audit_log(1000)
-    durations = [r.duration_ms for r in runs if r.duration_ms]
-    costs = [r.total_cost_usd for r in runs]
+    # Observed here: how long the visitor actually waited (replay playback or the live run's wall time) and
+    # what live calls really cost. Replays also carry the source recording's own cost, shown separately.
+    waits = [r.extra.get("wall_ms", 0) for r in runs if r.extra.get("wall_ms")]
+    live = [r for r in runs if r.extra.get("live_requested") or r.mode == "live"]
+    live_spend = sum(r.extra.get("live_cost_usd", 0.0) for r in live)
+    recorded_costs = [r.extra.get("recorded_cost_usd", 0.0) for r in runs if r.extra.get("recording")]
+    authored = sum(1 for r in runs if r.extra.get("recording", {}).get("recorded") == "hand-authored")
     held = sorted({e.target for e in events if e.action == "place_qa_hold" and e.actor == "agent"})
     carcases = 0
     for lot_id in held:
@@ -323,10 +337,11 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
     kpis = [
         {
             "label": "Alarm to triaged summary",
-            "value": _seconds(statistics.median(durations)) if durations else "—",
+            "value": _seconds(statistics.median(waits)) if waits else "—",
             "baseline": f"≈ {MANUAL_TRIAGE_MIN} min",
-            "note": f"median of {len(durations)} run(s) this session vs assumed manual triage" if durations else none,
-            "spark": [round(d / 1000, 1) for d in durations[::-1]] if len(durations) > 1 else None,
+            "note": (f"median wait over {len(waits)} run(s) this session ({len(runs) - len(live)} replayed at "
+                     f"recorded pace, {len(live)} live) vs assumed manual triage") if waits else none,
+            "spark": [round(d / 1000, 1) for d in waits[::-1]] if len(waits) > 1 else None,
             "kind": "measured",
         },
         {
@@ -344,10 +359,19 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
             "kind": "measured",
         },
         {
-            "label": "Agent cost per investigation",
-            "value": f"${statistics.median(costs):.3f}" if costs else "—",
-            "note": "median; replays show the recorded cost of the live run they replay" if costs else none,
+            "label": "Live model spend",
+            "value": f"${live_spend:.3f}" if live else "$0",
+            "note": (f"actual API cost of {len(live)} live run(s) this session" if live
+                     else "Replays cost nothing; switch to Live to measure real spend"),
             "kind": "measured",
+        },
+        {
+            "label": "Recorded cost per investigation",
+            "value": f"${statistics.median(recorded_costs):.3f}" if recorded_costs else "—",
+            "note": ("median cost of the source recordings replayed this session, not spent here"
+                     + (f"; {authored} replay(s) use a hand-authored trace priced from live runs" if authored else ""))
+            if recorded_costs else none,
+            "kind": "recorded",
         },
         {
             "label": "Consequential actions decided by a person",
@@ -356,6 +380,13 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
             "person (APPROVE tier, enforced in code)"
             if approvals
             else "No proposals yet this session",
+            "kind": "measured",
+        },
+        {
+            "label": "Proposals retired by changed evidence",
+            "value": str(expired_n),
+            "note": "expired before anyone could act on them: a new fault, a stale probe or a changed record; "
+            "nothing ran" if approvals else "No proposals yet this session",
             "kind": "measured",
         },
         {
@@ -381,8 +412,10 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
             "customer, grade and whether the product was actually out of spec."
         ),
         (
-            "Agent cost uses list API prices and measured tokens. In replay mode the cost shown is that of the "
-            "live run being replayed; the replay itself costs nothing. Hosting is excluded."
+            "Agent cost uses list API prices and measured tokens. Live spend is what this session's live calls "
+            "cost. Recorded cost is what the live run behind each replay cost when it was recorded; the replay "
+            "itself costs nothing, and the poisoned-email trace is hand-authored with token counts taken from "
+            "live runs. Hosting is excluded."
         ),
         (
             "“Held for verification” is not “saved”: most holds are released once a reading confirms the "

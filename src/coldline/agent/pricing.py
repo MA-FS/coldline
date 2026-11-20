@@ -83,3 +83,14 @@ def worst_case_cost_usd(model: str, input_tokens: int, max_output_tokens: int) -
     p = price_for(model)
     per_input = max(p.input, p.cache_write)
     return round((input_tokens * per_input + max_output_tokens * p.output) / 1_000_000, 6)
+
+
+def permitted_models(model: str, server_fallback: bool) -> tuple[str, ...]:
+    """Models that may serve (and bill) a request. With server-side fallback the API may answer from
+    another model, so every priced model is assumed possible."""
+    return (model, *PRICES) if server_fallback else (model,)
+
+
+def reservation_usd(models: tuple[str, ...], input_tokens: int, max_output_tokens: int) -> float:
+    """Upper bound for one call that any of ``models`` may serve: the most expensive one's worst case."""
+    return max(worst_case_cost_usd(m, input_tokens, max_output_tokens) for m in models)

@@ -269,6 +269,19 @@
       "model_confidence": "confirmed",
       "cap": "confirmed",
       "rewritten": false
+    },
+    "handover_facts": {
+      "alarms": [],
+      "verdicts": {},
+      "lots": {},
+      "work_orders": [],
+      "inbox": [
+        1,
+        1
+      ],
+      "outcomes": {},
+      "approvals": [],
+      "refused": []
     }
   }
 }

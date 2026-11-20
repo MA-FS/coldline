@@ -1,0 +1,6 @@
+{#- Out-of-band refresh of the page shell (header approvals count, mode pill, clock) after an action.
+    Context: shell context (pending_approvals, mode, now) -#}
+{% import "components/ui.html" as ui %}
+{{ ui.nav_count(pending_approvals, oob=True) }}
+<span id="mode-pill" hx-swap-oob="true">{{ ui.mode_badge(mode) }}</span>
+<div class="clock" id="clock" hx-swap-oob="true" title="Simulated plant time (AWST)">{% if now %}<span class="clock-date">{{ now|date_long }}</span><time class="clock-time" datetime="{{ now|iso }}">{{ now|hhmm }}</time>{% endif %}</div>

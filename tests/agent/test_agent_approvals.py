@@ -29,7 +29,7 @@ def _wo(p):
 def test_proposals_bind_source_versions_and_idempotency_keys() -> None:
     _, _, amend, dispatch = _hero_with_proposals()
     assert amend.source_versions["WO-1042"] == 1
-    assert set(dispatch.source_versions) == {"L-2231", "TT-401", "TT-402"}
+    assert set(dispatch.source_versions) == {"L-2231", "TT-401", "TT-402", "CH4", "incident"}
     assert amend.idempotency_key != dispatch.idempotency_key
 
 
@@ -88,6 +88,15 @@ def test_roles_are_enforced_and_agent_cannot_self_approve() -> None:
         with pytest.raises(PermissionError):
             ctx.approvals.approve(dispatch.id, actor, p)
     assert dispatch.status == ApprovalStatus.PENDING
+
+
+def test_decline_needs_the_same_authority_as_approve() -> None:
+    p, ctx, _, dispatch = _hero_with_proposals()
+    for actor in ("QA Manager", "shift supervisor", "Shift Supervisor (acting)", "agent"):
+        with pytest.raises(PermissionError):
+            ctx.approvals.decline(dispatch.id, actor, p)
+    assert dispatch.status == ApprovalStatus.PENDING  # a wrong-role veto cannot pre-empt the supervisor
+    assert ctx.approvals.approve(dispatch.id, SUPERVISOR, p).executed
 
 
 def test_identical_pending_proposal_is_not_duplicated() -> None:

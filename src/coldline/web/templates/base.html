@@ -36,11 +36,11 @@
     </a>
     <nav class="nav" aria-label="Main">
       {% for key, label, path in NAV %}
-        <a href="{{ P }}{{ path }}"{% if key == active_nav %} aria-current="page"{% endif %}>{{ label }}{% if key == 'approvals' and pending_approvals %}<span class="count" aria-label="{{ pending_approvals }} pending">{{ pending_approvals }}</span>{% endif %}</a>
+        <a href="{{ P }}{{ path }}"{% if key == active_nav %} aria-current="page"{% endif %}>{{ label }}{% if key == 'approvals' %}{{ ui.nav_count(pending_approvals) }}{% endif %}</a>
       {% endfor %}
     </nav>
     <div class="topbar-right">
-      {{ ui.mode_badge(mode) }}
+      <span id="mode-pill">{{ ui.mode_badge(mode) }}</span>
       <div class="clock" id="clock" title="Simulated plant time (AWST)">
         {% if now %}<span class="clock-date">{{ now|date_long }}</span><time class="clock-time" datetime="{{ now|iso }}">{{ now|hhmm }}</time>{% endif %}
       </div>

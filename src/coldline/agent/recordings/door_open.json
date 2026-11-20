@@ -325,6 +325,33 @@
       "model_confidence": "confirmed",
       "cap": "confirmed",
       "rewritten": false
+    },
+    "handover_facts": {
+      "alarms": [],
+      "verdicts": {
+        "CH4": "transient_recovered"
+      },
+      "lots": {
+        "L-2231": [
+          "ready",
+          "06:15"
+        ]
+      },
+      "work_orders": [
+        [
+          "CH4",
+          "open",
+          1,
+          false
+        ]
+      ],
+      "inbox": [
+        0,
+        0
+      ],
+      "outcomes": {},
+      "approvals": [],
+      "refused": []
     }
   }
 }

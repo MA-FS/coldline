@@ -71,7 +71,7 @@ def test_trip_state_shows_tripped_compressor() -> None:
 
 def test_running_run_connects_to_stream() -> None:
     html = client.get("/preview/overview?state=running").text
-    assert 'sse-connect="/runs/R-7842/stream"' in html
+    assert 'sse-connect="/runs/R-7842/stream?view=panel&amp;after=' in html
 
 
 def test_chiller_fragment_has_no_shell() -> None:

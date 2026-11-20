@@ -663,14 +663,14 @@
               "asset_id": "C2",
               "title": "C2 tripped 05:01 - standby offline, CH4/CH5 above limit",
               "priority": 1,
-              "note": "C2 tripped (running=false) at ~05:01, alarm AL-0001. CH4 (TT-401/402 ~7.4 C) and CH5 (TT-501/502 ~7.5 C) both probe pairs agree above 5.0 C since 05:05. Suction 9.49 C, discharge 12.35 C. Diagnose trip cause and restore cooling."
+              "note": "C2 tripped (running=false) at ~05:01, alarm {{alarm:C2}}. CH4 (TT-401/402 ~7.4 C) and CH5 (TT-501/502 ~7.5 C) both probe pairs agree above 5.0 C since 05:05. Suction 9.49 C, discharge 12.35 C. Diagnose trip cause and restore cooling."
             }
           },
           {
             "name": "draft_isolation_permit",
             "input": {
               "asset_id": "C2",
-              "work_description": "Investigate and repair tripped Compressor 2 (AL-0001); restore refrigeration to CH4/CH5.",
+              "work_description": "Investigate and repair tripped Compressor 2 ({{alarm:C2}}); restore refrigeration to CH4/CH5.",
               "isolations": [
                 "Electrical isolation and lock-out of C2 motor starter",
                 "Close suction and discharge isolation valves on C2",
@@ -821,6 +821,60 @@
       "model_confidence": "confirmed",
       "cap": "confirmed",
       "rewritten": false
+    },
+    "handover_facts": {
+      "alarms": [
+        [
+          "C2",
+          "red",
+          "C2 trip - standby offline"
+        ]
+      ],
+      "verdicts": {
+        "CH4": "excursion_confirmed",
+        "CH5": "excursion_confirmed"
+      },
+      "lots": {
+        "L-2231": [
+          "ready",
+          "06:15"
+        ],
+        "L-2232": [
+          "ready",
+          "07:28"
+        ]
+      },
+      "work_orders": [
+        [
+          "C2",
+          "open",
+          1,
+          true
+        ],
+        [
+          "CH4",
+          "open",
+          1,
+          false
+        ]
+      ],
+      "inbox": [
+        0,
+        0
+      ],
+      "outcomes": {
+        "approval:change_dispatch:L-2231": "new",
+        "approval:change_dispatch:L-2232": "new",
+        "hold:L-2231": "new",
+        "hold:L-2232": "new",
+        "permit:C2": "new",
+        "wo_created:C2": "new"
+      },
+      "approvals": [
+        "Move L-2231 dispatch 06:15 -> 09:30",
+        "Move L-2232 dispatch 07:28 -> 10:30"
+      ],
+      "refused": []
     }
   }
 }

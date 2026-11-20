@@ -43,7 +43,15 @@ class ModelResponse:
 
 
 class ModelError(Exception):
-    """A model call failed in a way that should end the live run and fall back to replay."""
+    """A model call failed in a way that should end the live run and fall back to replay.
+
+    ``billing_unknown`` is set when the request may have been processed (timeout, lost connection): the
+    budget then keeps the call's reservation instead of assuming it cost nothing.
+    """
+
+    def __init__(self, message: str, *, billing_unknown: bool = False) -> None:
+        super().__init__(message)
+        self.billing_unknown = billing_unknown
 
 
 class ScriptExhausted(Exception):
@@ -76,7 +84,9 @@ class AnthropicModelClient:
     def __init__(self, settings: AgentSettings, client: anthropic.AsyncAnthropic | None = None) -> None:
         self.model = settings.model
         self._settings = settings
-        self._client = client or anthropic.AsyncAnthropic(max_retries=1, timeout=settings.call_timeout_s)
+        # No SDK retries: one budget reservation covers exactly one HTTP attempt. A failed call ends the
+        # live run and the visitor continues on the recorded run instead.
+        self._client = client or anthropic.AsyncAnthropic(max_retries=0, timeout=settings.call_timeout_s)
 
     def _thinking(self) -> dict[str, Any]:
         if self._settings.thinking == "between_tools":
@@ -113,7 +123,7 @@ class AnthropicModelClient:
             else:
                 response = await self._client.messages.create(**params, timeout=timeout_s)
         except anthropic.APITimeoutError as exc:
-            raise ModelError("model call timed out") from exc
+            raise ModelError("model call timed out", billing_unknown=True) from exc
         except anthropic.RateLimitError as exc:
             raise ModelError("model API rate limit") from exc
         except anthropic.AuthenticationError as exc:
@@ -123,7 +133,7 @@ class AnthropicModelClient:
         except anthropic.APIStatusError as exc:
             raise ModelError(f"model API error {exc.status_code}") from exc
         except anthropic.APIConnectionError as exc:
-            raise ModelError("could not reach the model API") from exc
+            raise ModelError("could not reach the model API", billing_unknown=True) from exc
         return _normalise(response)
 
 
@@ -173,6 +183,7 @@ class ScriptedTurn(BaseModel):
     model: str = DEFAULT_MODEL
     stop_reason: str = ""  # default: "tool_use" when there are calls, else "end_turn"
     error: str = ""  # simulate a failed call (tests the fallback path)
+    error_billing_unknown: bool = False  # simulate a lost response (timeout, dropped connection)
 
 
 class ScriptedModelClient:
@@ -212,7 +223,7 @@ class ScriptedModelClient:
         if self.speed > 0 and turn.latency_ms:
             await asyncio.sleep(min(turn.latency_ms / 1000 * self.speed, self.max_delay_s))
         if turn.error:
-            raise ModelError(turn.error)
+            raise ModelError(turn.error, billing_unknown=turn.error_billing_unknown)
         think = self.resolve(turn.think)
         calls = [
             ToolCall(id=f"toolu_s{self.calls:02d}_{k}", name=c.name, input=self.resolve(c.input))

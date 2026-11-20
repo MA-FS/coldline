@@ -9,6 +9,8 @@
 {% from "components/mimic.html" import plant_mimic %}
 {% block content %}
 {% set P = href_prefix or "" %}
+{% set busy = run is not none and run.status == RunStatus.RUNNING %}
+{% set busy_title = "The agent is investigating; wait for it to finish (or reset the plant)" %}
 <div id="overview">
   <div class="page-head">
     <div>
@@ -25,18 +27,18 @@
       </p>
       {% endif %}
     </div>
-    <div class="ov-controls" role="toolbar" aria-label="Demo controls" hx-select-oob="#clock">
+    <div class="ov-controls" role="toolbar" aria-label="Demo controls" hx-select-oob="#clock,#nav-approvals-count,#mode-pill">
       <div class="segmented" role="group" aria-label="Agent mode">
         <button type="button" aria-pressed="{{ 'true' if mode == 'replay' else 'false' }}" hx-post="/session/mode" hx-vals='{"mode": "replay"}' hx-target="#overview" hx-select="#overview" hx-swap="outerHTML">{{ icon('replay', 'icon-sm') }}Replay</button>
         <button type="button" aria-pressed="{{ 'true' if mode == 'live' else 'false' }}" hx-post="/session/mode" hx-vals='{"mode": "live"}' hx-target="#overview" hx-select="#overview" hx-swap="outerHTML"{% if not live_available %} disabled title="{{ live_status.reason if live_status else 'Live runs are capped for today' }}"{% endif %}>{{ icon('bolt', 'icon-sm') }}Live</button>
       </div>
-      <button class="btn btn--outline" type="button" hx-post="/session/stale" hx-vals='{"tag": "TT-402"}' hx-target="#overview" hx-select="#overview" hx-swap="outerHTML" title="Stop TT-402 (the independent probe) from reporting">{{ icon('eye-off') }}<span>Make reference probe stale</span><span class="spinner htmx-indicator"></span></button>
+      <button class="btn btn--outline" type="button" hx-post="/session/stale" hx-vals='{"tag": "TT-402"}' hx-target="#overview" hx-select="#overview" hx-swap="outerHTML" title="{{ busy_title if busy else 'Stop TT-402 (the independent probe) from reporting' }}"{% if busy %} disabled{% endif %}>{{ icon('eye-off') }}<span>Make reference probe stale</span><span class="spinner htmx-indicator"></span></button>
       <details class="menu">
         <summary class="btn btn--primary">{{ icon('bolt') }}<span>Inject fault</span>{{ icon('chevron-down', 'icon-sm') }}</summary>
         <div class="menu-pop" role="menu">
-          <div class="menu-label eyebrow">Scenarios</div>
+          <div class="menu-label eyebrow">Scenarios{% if busy %} · wait for the running investigation{% endif %}</div>
           {% for s in scenarios %}
-          <button class="menu-item" role="menuitem" type="button" hx-post="/session/inject" hx-vals='{"scenario": "{{ s }}"}' hx-target="#overview" hx-select="#overview" hx-swap="outerHTML">
+          <button class="menu-item" role="menuitem" type="button" hx-post="/session/inject" hx-vals='{"scenario": "{{ s }}"}' hx-target="#overview" hx-select="#overview" hx-swap="outerHTML"{% if busy %} disabled title="{{ busy_title }}"{% endif %}>
             {{ icon({'probe_mismatch': 'probe', 'compressor_trip': 'gear', 'door_open': 'clock', 'poisoned_email': 'mail'}.get(s|string, 'bolt')) }}
             <b>{{ SCENARIO_LABELS[s][0] }}</b><span>{{ SCENARIO_LABELS[s][1] }}</span>
           </button>
@@ -50,8 +52,9 @@
 
   <div class="ov">
     <section class="panel ov-mimic" id="mimic" aria-label="Plant mimic"
-      {% if poll_url %}hx-get="{{ poll_url }}" hx-trigger="every 5s, plant-changed from:body" hx-select="#mimic" hx-swap="outerHTML" hx-select-oob="#clock" hx-disinherit="*"{% endif %}>
+      {% if poll_url %}hx-get="{{ poll_url }}" hx-trigger="every 5s, plant-changed from:body" hx-select="#mimic" hx-swap="outerHTML" hx-select-oob="#clock,#nav-approvals-count,#mode-pill" hx-disinherit="*"{% endif %}>
       <div class="mimic-wrap">{{ plant_mimic(plant, selected=detail.asset.id if detail else 'CH4', prefix=P) }}</div>
+      <p class="mimic-hint">{{ icon('arrow-right', 'icon-sm') }}Swipe sideways to see the whole plant</p>
     </section>
 
     <div class="ov-detail">{% if detail %}{{ pl.chiller_detail(detail) }}{% endif %}</div>

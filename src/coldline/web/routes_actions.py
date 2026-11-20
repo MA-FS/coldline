@@ -1,8 +1,11 @@
 """State-changing routes: demo controls on the overview and approval decisions.
 
 Every route here is a POST behind :func:`~coldline.web.runtime.limit_posts` (CSRF header check and a per-IP
-rate limit); routes that start an agent run also pass a stricter per-IP run limit. Responses are HTML for
-htmx to swap, with a toast in the ``HX-Trigger`` header.
+rate limit). Controls that change the plant and start an agent run are admitted *before* they touch the
+plant: while an investigation is running they are refused (409), because changing the evidence under a
+running investigation would leave it following a plan made for a different plant; then the stricter per-IP
+run limit applies (429). A refused control leaves the plant exactly as it was. Responses are HTML for htmx
+to swap, with a toast in the ``HX-Trigger`` header.
 """
 
 from __future__ import annotations
@@ -30,15 +33,25 @@ def toast(title: str, text: str = "", tone: str = "neutral", **extra: Any) -> di
 
 
 def render_overview(request: Request, rt: Runtime, v: Visitor, headers: dict[str, str]) -> HTMLResponse:
-    """The full overview page; the controls swap ``#overview`` out of it with ``hx-select``."""
+    """The full overview page; the controls swap ``#overview`` out of it with ``hx-select`` (and the header's
+    approvals count, mode pill and clock with ``hx-select-oob``)."""
     return templates.TemplateResponse(request, "pages/overview.html", cx.overview(rt, v), headers=headers)
 
 
+def admit_control(rt: Runtime, v: Visitor, starts_run: bool = True) -> None:
+    """Refuse a plant-changing control before it changes anything (see the module docstring)."""
+    busy = rt.agent.active_run(v.sid)
+    if busy is not None:
+        raise HTTPException(
+            409, f"The agent is still investigating ({busy.run_id}). Wait for it to finish, or reset the plant.")
+    if starts_run:
+        limit_runs(v, rt)
+
+
 async def start_investigation(rt: Runtime, v: Visitor, scenario: Scenario | None) -> tuple[str, str]:
-    """Start (or join) the visitor's agent run. Returns (run id, sentence for the toast)."""
-    limit_runs(v, rt)
-    busy = next((r for r in rt.agent.list_runs(v.sid) if r.status.value == "running"), None)
-    run = await rt.agent.start_run(v.sid, v.plant, scenario=scenario, mode=v.prefs.mode)
+    """Start the visitor's agent run (admission already checked). Returns (run id, sentence for the toast)."""
+    busy = rt.agent.active_run(v.sid)
+    run = await rt.agent.start_run(v.sid, v.plant, scenario=scenario, mode=v.prefs.mode, origin=v.ip)
     if "asset_id" not in run.extra:  # what the agent panel says it is investigating
         rank = {"red": 0, "amber": 1, "low": 2}
         alarms = sorted((a for a in v.plant.list_alarms() if a.active), key=lambda a: rank[a.priority.value])
@@ -59,19 +72,23 @@ async def inject(request: Request, v: V, rt: RT, scenario: Annotated[str, Form()
         s = Scenario(scenario)
     except ValueError:
         raise HTTPException(422, f"Unknown scenario {scenario!r}.") from None
+    admit_control(rt, v)
     v.plant.inject(s)
     v.prefs.focus = None
-    v.prefs.recent_expired.clear()
+    expired = rt.agent.revalidate_approvals(v.sid, v.plant)  # a new incident retires older proposals
+    v.prefs.recent_expired = {a.id for a in expired}
     _, text = await start_investigation(rt, v, s)
+    if expired:
+        text += f" {len(expired)} earlier proposal(s) expired because a new incident began."
     return render_overview(request, rt, v, toast(f"Fault injected: {SCENARIO_LABELS[s][0]}", text, "amber"))
 
 
 @router.post("/session/stale", response_class=HTMLResponse)
 async def stale(request: Request, v: V, rt: RT, tag: Annotated[str, Form()] = "TT-402") -> HTMLResponse:
-    try:
-        v.plant.make_stale(tag)
-    except KeyError:
-        raise HTTPException(404, f"No tag {tag}.") from None
+    if tag not in {t for a in v.plant.snapshot().assets for t in a.tags}:
+        raise HTTPException(404, f"No tag {tag}.")
+    admit_control(rt, v, starts_run=v.plant.snapshot().active_scenario is not None)
+    v.plant.make_stale(tag)
     expired = rt.agent.revalidate_approvals(v.sid, v.plant)
     v.prefs.recent_expired = {a.id for a in expired}
     parts = [f"{tag} stopped reporting; its readings are now stale."]
@@ -89,7 +106,7 @@ async def mode(request: Request, v: V, rt: RT, mode: Annotated[str, Form()]) -> 
     if mode not in {"replay", "live"}:
         raise HTTPException(422, "Mode must be replay or live.")
     if mode == "live":
-        status = rt.agent.live_status(v.sid)
+        status = rt.agent.live_status(v.sid, v.ip)
         if not status.live_available:
             v.prefs.mode = "replay"
             return render_overview(request, rt, v, toast("Live runs unavailable", status.reason, "amber"))
@@ -103,8 +120,8 @@ async def mode(request: Request, v: V, rt: RT, mode: Annotated[str, Form()]) -> 
 
 @router.post("/session/reset", response_class=HTMLResponse)
 async def reset(request: Request, v: V, rt: RT) -> HTMLResponse:
-    rt.sessions.reset(v.sid)
-    rt.agent.forget_session(v.sid)
+    rt.sessions.reset(v.sid, origin=v.ip)
+    rt.agent.forget_session(v.sid, keep_numbering=True)  # the audit trail survives a reset; ids must not repeat
     v.prefs.focus = None
     v.prefs.recent_expired.clear()
     return render_overview(request, rt, v, toast("Plant reset", "Faults, holds, runs and approvals cleared.", "ok"))

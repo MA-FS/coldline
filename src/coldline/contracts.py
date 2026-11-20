@@ -14,6 +14,7 @@ All data is synthetic. "Southern Range Meats" is a fictional plant.
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
@@ -150,6 +151,7 @@ class PermitDraft(BaseModel):
     isolations: list[str]  # e.g. ["Isolate C2 MCC feeder at MCC-2 / LOTO"]
     hazards: list[str]
     status: str = "draft"  # the agent may only ever create drafts
+    drafted_by: str = ""
 
 
 class InboxMessage(BaseModel):
@@ -191,7 +193,9 @@ class PlantSnapshot(BaseModel):
     latest: dict[str, Reading]  # tag -> latest reading
     alarms: list[Alarm]
     lots: list[Lot]
-    active_scenario: Scenario | None = None
+    active_scenario: Scenario | None = None  # the most recent injection, physical or inbox
+    physical_scenario: Scenario | None = None  # the most recent injection that changed telemetry
+    incident: int = 0  # generation counter: bumped by every injection and reset
 
 
 # --------------------------------------------------------------------------- systems seam
@@ -222,6 +226,7 @@ class PlantSystems(Protocol):
     def get_lot(self, lot_id: str) -> Lot: ...
     def place_qa_hold(self, lot_id: str, reason: str, actor: str, evidence_ids: list[str]) -> QAHold: ...
     def release_qa_hold(self, lot_id: str, actor: str) -> QAHold: ...
+    def active_hold(self, lot_id: str) -> QAHold | None: ...
     def change_dispatch(self, lot_id: str, new_due: datetime, actor: str, reason: str) -> Lot: ...
 
     # CMMS
@@ -236,6 +241,7 @@ class PlantSystems(Protocol):
     def draft_permit(
         self, asset_id: str, work_description: str, isolations: list[str], hazards: list[str], actor: str
     ) -> PermitDraft: ...
+    def list_permits(self, asset_id: str | None = None) -> list[PermitDraft]: ...
 
     # external text
     def inbox(self) -> list[InboxMessage]: ...
@@ -243,6 +249,11 @@ class PlantSystems(Protocol):
     # audit
     def audit(self, event: AuditEvent) -> None: ...
     def audit_log(self, limit: int = 100) -> list[AuditEvent]: ...
+
+    # consistency
+    def transaction(self) -> AbstractContextManager[None]:
+        """Hold the sandbox lock across a validate-then-apply sequence (approval decisions)."""
+        ...
 
 
 # --------------------------------------------------------------------------- agent outputs
@@ -292,12 +303,15 @@ class Approval(BaseModel):
     decided_by: str | None = None
     decided_at: datetime | None = None
     idempotency_key: str
+    run_ids: list[str] = []  # every run that proposed this action on the same evidence (run_id first)
+    note: str = ""  # why it expired or failed, for the person who tried to decide
 
 
 class RunStatus(StrEnum):
     RUNNING = "running"
     AWAITING_APPROVAL = "awaiting_approval"
     DONE = "done"
+    INCOMPLETE = "incomplete"  # ended without an accepted handover note (step or time limit)
     FAILED = "failed"
 
 

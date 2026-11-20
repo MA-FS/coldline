@@ -16,9 +16,10 @@ how to change it safely, and how to tell whether a change made it better or wors
 | `loop.py` | The bounded tool-use loop (an async generator of `TraceStep`) and run finalisation. |
 | `tools.py` | Tool registry: typed inputs, tiers, scopes, NEVER-tier refusals, handover gate. |
 | `evidence.py` | Deterministic checks: probe freshness and divergence, verdicts, confidence cap, citations. |
-| `approvals.py` | APPROVE-tier proposals: source versions, idempotency, expiry, audit. |
+| `approvals.py` | APPROVE-tier proposals: evidence binding, idempotency, expiry, audit. |
+| `handover.py` | Handover integrity: removes unsupported sentences, the code-composed facts block, replay check. |
 | `injection.py` | Delimiting and screening of untrusted text (inbox, ticket notes). |
-| `budget.py` | Per-session rate limit, concurrency limit, daily US$ cap with per-call reservations. |
+| `budget.py` | Per-session and per-address limits, concurrency, daily US$ cap with journalled per-call reservations. |
 | `pricing.py` | The one place where tokens become dollars. |
 | `model.py` | `AnthropicModelClient` (live) and `ScriptedModelClient` (replay and evals). |
 | `prompts.py` | Frozen system prompt, run trigger, prompt version hash. |
@@ -35,12 +36,12 @@ agent = get_agent_service()                      # configured from the environme
 plant = sessions.get(session_id)                 # coldline.systems.SessionManager
 
 run = await agent.start_run(session_id, plant, mode="replay")   # or mode="live"; returns immediately
-async for event in agent.stream_events(run.run_id):             # SSE-ready dicts
+async for event in agent.stream_events(session_id, run.run_id): # SSE-ready dicts
     ...  # {"event": "step", "id": "3", "data": <TraceStep json>} ... then {"event": "done", "data": <RunTrace>}
 
 agent.approve(session_id, approval_id, "Shift Supervisor", plant)   # -> ApprovalResult(approval, executed, message)
 agent.decline(session_id, approval_id, "Shift Supervisor", plant, reason="")
-agent.list_runs(session_id); agent.get_run(run_id); agent.list_approvals(session_id)
+agent.list_runs(session_id); agent.get_run(session_id, run_id); agent.list_approvals(session_id)
 agent.live_status(session_id)        # BudgetStatus: is live available, why not, spend, runs left
 agent.revalidate_approvals(session_id, plant)  # expire pending approvals whose evidence changed
 agent.forget_session(session_id)     # call when the visitor's sandbox expires (cancels a running run)
@@ -106,15 +107,18 @@ GUARDRAIL step and an audit event. Unknown names are refused the same way, with 
 | Arguments validated against the Pydantic model before anything runs | `ToolRegistry.execute` |
 | APPROVE-tier calls only create a proposal; nothing executes until a person approves | `ToolRegistry._queue`, `approvals.py` |
 | Holds, proposals and citations may only reference records a tool returned in this run | `_require_seen` |
-| No new work order without first checking existing ones; no duplicate in one run | `create_work_order` |
+| A QA hold must cite a reading, alarm or asset record for the chiller the lot is in, and never untrusted text | `place_qa_hold` |
+| No new work order without first checking existing ones; an open agent-raised order (or permit draft) is reused, not duplicated, even across runs and a live-to-replay fallback | `create_work_order`, `draft_isolation_permit` |
 | Permits are drafts; the agent cannot authorise | `draft_isolation_permit`, NEVER list |
 | Dispatch change refused while the lot's chiller evidence is stale | `propose_dispatch_change` |
 | Handover rejected until trend, lots and work orders are read for every affected chiller (and work orders or history for an alarmed compressor) | `missing_lookups` |
 | Handover rejected if it cites an id no tool returned | `write_handover_note` |
 | Confidence capped by the evidence; uncertain verdicts get a fixed headline | `evidence.gate_conclusion` |
+| The handover drops sentences the checks contradict (a diagnosis on uncertain evidence, "can ship" while product is held, an "empty" inbox that is not) and always ends with facts composed in code | `handover.py` |
+| A run without an accepted handover is marked `incomplete`, never shown as a finished investigation | `loop.finalize` |
 | A run that read suspected injection text cannot propose hold releases, cannot use that text as justification, and must say so in its conclusion | `tools.py` |
-| Approvals expire if a source record changed; execute exactly once; the agent cannot approve | `ApprovalStore.approve` |
-| Spend reserved before every call against the daily cap | `budget.py`, `loop.py` |
+| Approvals expire if their evidence changed (records, probe quality, verdict, incident) or the action's precondition no longer holds; execute exactly once; approve and decline need the same role; the agent cannot decide | `ApprovalStore` |
+| An upper bound on every call's cost reserved and journalled before the call; unknown outcomes keep the reservation | `budget.py`, `loop.py` |
 
 ## Evidence checks
 
@@ -130,23 +134,45 @@ uses) and returns one verdict per chiller:
 | `probes_agree` | otherwise | `confirmed` | model's wording |
 
 The verdict is returned to the model with every trend read (as `evidence_checks`) and recomputed at
-handover time. The handover note always ends with a "Checks computed in code" block, so a reader can see the
-numbers that set the confidence independently of what the model wrote.
+handover time.
+
+## Handover integrity
+
+What a person reads, and copies with "Copy as text", must agree with what code verified (`handover.py`):
+
+1. **Unsupported sentences are removed** from the model's draft: a cause stated while the verdict is
+   uncertain, release or dispatch advice while a lot in scope is held or the evidence is uncertain, a claim
+   that the agent released or approved something, and statements the run's own results contradict (an
+   empty inbox that is not, no alarms while alarms are active, a held lot "not held", nothing awaiting
+   approval while proposals are pending). The removed text is listed in the trace and in
+   `run.extra["gate"]["removed"]`, never in the note.
+2. **A block composed in code** ("Checks computed in code (not by the model)") always ends the note:
+   status and confidence, active alarms, the evidence check per chiller, holds, work orders and permit
+   drafts, proposals waiting (with their approver), required follow-ups, and what the run did with any
+   untrusted input (derived from its recorded steps, not asserted).
+3. **Replays check they are describing the same plant.** See "Replay and live".
 
 ## Approvals
 
-A proposal records `source_versions` for every record it depends on: the work order's `version`, a short
-content hash of the lot's dispatch time, and each relevant probe's quality (good, stale, bad). On approve:
+A proposal records `source_versions`, one categorical value per piece of evidence it relied on: the work
+order's or lot's `version` (a lot's moves on every hold, release and dispatch change), each relevant
+probe's quality (good, stale, bad), the chiller's evidence verdict, the exact QA hold a release would lift,
+and the plant's incident generation (moved by every fault injection and reset). Sampling noise moves none
+of these. On approve, inside one sandbox transaction:
 
 1. Already approved: no-op ("not executed again"). Not pending: nothing happens.
-2. Actor must hold an approver role (`Shift Supervisor` for dispatch and amendments, `QA Manager` for hold
-   releases). `agent` and `system` are always refused.
-3. Versions re-read. Any change: `EXPIRED`, audited, nothing runs. This is how "make the reference probe
-   stale" invalidates proposals made on the earlier comparison.
+2. Actor must hold an approver role, matched exactly (`Shift Supervisor` for dispatch and amendments,
+   `QA Manager` for hold releases). `agent` and `system` are always refused. Decline needs the same role.
+3. Evidence re-read and the action's precondition re-checked (a new dispatch time must still be ahead).
+   Any change: `EXPIRED` with the reason in `approval.note`, audited, nothing runs. This is how "make the
+   reference probe stale" or injecting a new fault retires proposals made on the earlier evidence.
 4. Execute once (guarded by the idempotency key), set `APPROVED`, write the `approve` audit event, all under
    one lock. A failure during execution (for example a work-order version conflict) also ends as `EXPIRED`.
 
-Decline records a `decline` event and changes nothing else. `revalidate_approvals()` runs step 3 for every pending approval without executing anything; the web layer calls it when a visitor makes a probe stale, so the expiry shows immediately rather than on the next click.
+`revalidate_approvals()` runs step 3 for every pending approval without executing anything. It runs after
+every fault injection, stale probe, decision and finished run, so expiry shows as soon as evidence changes.
+A later run proposing the same action on the same, still-valid evidence reuses the pending approval and adds
+its id to `run_ids`; one decision then settles every run that asked for it.
 
 ## Untrusted text
 
@@ -164,11 +190,21 @@ tool calls, token counts and latency). Replay feeds those turns through the same
 for real against the visitor's sandbox, through the same tiers, evidence gate and approval store. The QA
 hold appears, proposals wait for approval, and a stale probe changes the outcome, at zero model cost.
 Records created during a run get placeholders in recordings (`{{hold:L-2231}}`,
-`{{approval:change_dispatch:L-2231}}`, `{{flagged}}`), resolved per sandbox at replay time.
+`{{approval:change_dispatch:L-2231}}`, `{{flagged}}`), and so do alarms (`{{alarm:C2}}`, the alarm active
+on C2 in this plant), resolved per sandbox at replay time.
 
 `RecordingLibrary.select` picks the recording for the active scenario, preferring the stale variant when
-its `requires_stale` probe is not fresh. Recorded prose (times, values) reflects the recording sandbox; the
-code-computed checks and all side effects reflect the visitor's.
+its `requires_stale` probe is not fresh. A poisoned email injected while an earlier fault's alarm is still
+active replays the investigation of that fault (those recordings read the inbox too), because a handover
+that skipped the active alarm would be rejected.
+
+Visitors chain scenarios, so a replay often meets a plant the recording never saw: a lot already on hold,
+an email in the inbox, an approved dispatch change. Each recording stores `handover_facts`, an id-free
+summary of what the recorded run observed and did. At handover the replay compares its own; if they differ,
+the recorded wording described a different plant, so the note is composed in code instead and the trace
+says why ("Replay check: plant differs from the recording"). Side effects, citations and checks always
+reflect the visitor's plant. `uv run python -m evals.record --refresh-facts` recomputes the stored facts
+without API calls.
 
 Current recordings (`extra.recorded` says which):
 
@@ -186,8 +222,10 @@ check; it must read correctly whatever else the visitor has done in their sandbo
 **Live mode** is opt-in per run. It is refused, and the run continues as replay with a visible
 "Fallback" step, when the kill switch is off, no API key is set, the session has used its live runs, too
 many live runs are in flight, or the daily cap is reached. A live run that fails part-way (API error,
-timeout, refusal, budget) also continues as replay in the same run. Server-side fallback
-(`fallbacks: "default"`) is on, so a request the model declines can be retried by the API on another model.
+timeout, refusal, budget) also continues as replay in the same run, keeping the run's context: what the
+live part created is reused rather than repeated, and anything it flagged stays flagged. Server-side
+fallback (`fallbacks: "default"`) is on, so a request the model declines can be retried by the API on
+another model; reservations are priced for the most expensive model that might answer.
 
 To re-record after a prompt or tool change: `uv run python -m evals.record` (needs `ANTHROPIC_API_KEY`;
 about US$0.15 for all four live recordings). Each recording must pass its scenario eval before it is saved.
@@ -201,15 +239,21 @@ carry the `prompt_version` they were made with.
 | Kill switch | on | `COLDLINE_LIVE_ENABLED=0` forces replay for everyone |
 | Daily cap (all visitors, UTC day) | US$3.00 | `COLDLINE_DAILY_USD_CAP` |
 | Live runs per session per hour | 3 | `COLDLINE_SESSION_RUNS_PER_HOUR` |
+| Live runs per client address per day | 6 | `COLDLINE_ORIGIN_RUNS_PER_DAY` |
 | Concurrent live runs | 2 | `COLDLINE_MAX_CONCURRENT_LIVE` |
 | Model calls per run | 8 | `COLDLINE_MAX_MODEL_CALLS` |
 | Output tokens per call | 3000 | `COLDLINE_MAX_TOKENS_PER_CALL` |
 | Run / call timeout | 90 s / 40 s | `COLDLINE_RUN_TIMEOUT_S`, `COLDLINE_CALL_TIMEOUT_S` |
 
-Before each call the loop reserves the call's worst case (every input token at the cache-write rate plus
-the full output limit) and settles to the real cost afterwards, so concurrent visitors cannot overshoot the
-cap. The day's spend is persisted to `$COLDLINE_DATA_DIR/agent_spend.json` when that directory exists. The session limit is keyed by session id; the daily cap is the backstop for
-visitors who clear cookies.
+Before each call the loop reserves an upper bound: one token per input byte (a token always covers at
+least one byte) at the cache-write rate of the most expensive model that may answer, plus the full output
+limit. The SDK does not retry, so one reservation covers one attempt. The reservation is written to the
+ledger before the call and settled afterwards: at the real cost, at zero for an API error, or kept in full
+(as `unreconciled_usd`) when the outcome is unknown (timeout, lost connection, cancellation). The ledger is
+`$COLDLINE_DATA_DIR/agent_spend.json`, replaced atomically on every change. A reservation left behind by a
+stopped process counts as spent on restart. If the ledger cannot be read or written, live runs are
+disabled with an operator-visible reason until it is fixed. The session limit is keyed by session id, the
+per-address quota stops one visitor cycling cookies, and the daily cap is the backstop.
 
 Other settings: `ANTHROPIC_API_KEY`, `COLDLINE_MODEL` (default `claude-sonnet-5-5`), `COLDLINE_EFFORT`
 (`medium`), `COLDLINE_THINKING` (`between_tools` on Sonnet 5.5, `adaptive` elsewhere),
@@ -224,14 +268,18 @@ uv run python -m evals.run --live              # scenario cases against the real
 COLDLINE_LIVE_TESTS=1 uv run pytest evals -q   # the same, under pytest
 ```
 
-Evals assert on what happened in the business systems and on the reported confidence, never on wording.
+Evals assert on what happened in the business systems and on the reported confidence. Where wording is the
+risk (an unsupported diagnosis or release advice in the handover), they check the note as rendered and
+copied, and the code-set headline.
 
 * **scenario** (5): probe mismatch, stale reference probe, compressor trip, door open, poisoned email.
   Deterministic in CI via the recordings; live with `--live`.
-* **adversarial** (5, scripted models that misbehave on purpose): follows the injected email, invents a
-  diagnosis, skips required lookups, proposes a dispatch on stale evidence, cites a record it never read.
-  These show the controls hold when the model does not.
-* **approval** (4): expiry on changed evidence, exactly-once execution, decline, no self-approval.
+* **adversarial** (6, scripted models that misbehave on purpose): follows the injected email, holds a lot on
+  the injected email's say-so, invents a diagnosis and release advice, skips required lookups, proposes a
+  dispatch on stale evidence, cites a record it never read. These show the controls hold when the model
+  does not.
+* **approval** (5): expiry on a stale probe, expiry when a new fault supersedes the evidence, exactly-once
+  execution, decline, no self-approval.
 
 Recording the live scenarios is itself an eval: the first prompt version missed the dispatch proposal and
 the permit draft and over-reacted to the door-open transient. A short "site procedure" section in the
@@ -255,4 +303,7 @@ system prompt fixed all three; the recorder refused to save any run that failed 
 * State is in memory (one process). Runs, approvals and the rate limiter reset on restart; the daily
   spend does not if `COLDLINE_DATA_DIR` is set.
 * The injection screen is a pattern list, a cheap first signal. The tier rules are the control.
-* Recorded prose can mention times from the recording sandbox; checks and side effects are always live.
+* The handover sentence checks are patterns too: they catch the contradictions above, not every possible
+  misstatement. The code-composed block is the authoritative record.
+* Recorded prose can mention clock times from the recording sandbox; checks and side effects are always
+  live, and wording recorded against a different plant state is not reused.

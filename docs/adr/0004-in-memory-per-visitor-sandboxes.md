@@ -11,9 +11,12 @@ resets after two idle hours is fine.
 ## Decision
 
 Each visitor gets a `Sandbox` (simulator plus mock business systems plus audit log) selected by a signed,
-random session cookie and held in a `SessionManager` with a 2-hour idle TTL and a cap of 200 (oldest evicted).
-Agent runs, approvals and UI preferences are keyed by the same session and dropped when the sandbox goes.
-Everything runs in one process on one machine.
+random session cookie and held in a `SessionManager` with a 2-hour idle TTL and a cap of 200. At capacity
+the least recently used sandbox is evicted, never one with an investigation running, and one client address
+may hold at most 20. Agent runs, approvals and UI preferences are keyed by the same session and dropped when
+the sandbox goes. Within a sandbox, history is bounded too: the newest 2,000 audit events, the newest 50
+cleared alarms, released holds, permit drafts, inbox messages and agent-raised work orders, 25 runs, and
+decided approvals only while a retained run references them. Everything runs in one process on one machine.
 
 ## Consequences
 

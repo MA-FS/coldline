@@ -19,4 +19,7 @@ htmx; no build step and no third-party scripts at runtime.
 - One language and one deployable; templates are covered by the same tests as the routes.
 - A strict Content-Security-Policy is easy: scripts come only from the app itself.
 - Rich client-side interaction (drag, offline) would be harder; the product does not need it.
-- SSE is one-way and reconnects natively; the stream uses step numbers as event ids so a reconnect resumes.
+- SSE is one-way and reconnects natively. The stream sends exactly one event per step, with the step number
+  as its id (an approval travels inside the event of the step that queued it), so a reconnect resumes
+  without gaps. Pages opened mid-run attach after the steps they already rendered, and the browser drops
+  any fragment whose id is already on the page.
