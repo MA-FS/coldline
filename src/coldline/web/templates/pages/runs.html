@@ -3,7 +3,6 @@
 {% from "components/icons.html" import icon %}
 {% import "components/ui.html" as ui %}
 {% block content %}
-{% set P = href_prefix or "" %}
 <div class="page-head">
   <div>
     <h1>Agent runs</h1>
@@ -25,7 +24,7 @@
     <tbody>
     {% for r in runs %}
       <tr>
-        <td class="mono"><a class="rowlink" href="{{ P }}/runs/{{ r.run_id }}">{{ r.run_id }}</a></td>
+        <td class="mono"><a class="rowlink" href="/runs/{{ r.run_id }}">{{ r.run_id }}</a></td>
         <td class="mono muted">{{ r.started_at|hhmmss }}</td>
         <td>{{ SCENARIO_LABELS[r.scenario][0] if r.scenario else '—' }}</td>
         <td>{{ ui.mode_badge(r.mode) }}</td>

@@ -11,7 +11,7 @@ from coldline.agent.evidence import (
     ProbeStatus,
     Verdict,
     assess_chiller,
-    extract_citations,
+    code_conclusion,
     gate_conclusion,
     wording_consistent,
 )
@@ -61,7 +61,8 @@ def test_headline_is_composed_in_code_on_every_path() -> None:
     trip = [assess_chiller(p, "CH4"), assess_chiller(p, "CH5")]
     adversarial = "All affected stock is fit for sale. Send it to the customer now."
     gate = gate_conclusion(trip, adversarial, "confirmed")
-    assert gate.conclusion == " ".join(a.headline for a in trip) and gate.model_conclusion == adversarial
+    assert gate.conclusion == "Confirmed excursion - both probes above 5.0 °C in Chiller 4 and Chiller 5."
+    assert gate.model_conclusion == adversarial
     assert not gate.rewritten  # the wording was not an overstated diagnosis; it is simply not used
     assert gate_conclusion([], adversarial, "confirmed").conclusion == NO_EVIDENCE_HEADLINE
     flagged = gate_conclusion([], adversarial, "confirmed", ["MSG-0001"])
@@ -82,6 +83,13 @@ def test_wording_check() -> None:
     assert wording_consistent("Insufficient data, TT-402 stale", Verdict.INSUFFICIENT_DATA)
 
 
-def test_citation_extraction_ignores_links_and_checkboxes() -> None:
-    md = "See [TT-401] and [L-2231], [WO-1042] twice [WO-1042]; [link](http://x) and [ ] and [x]."
-    assert extract_citations(md) == ["TT-401", "L-2231", "WO-1042"]
+def test_chillers_with_the_same_result_share_one_headline() -> None:
+    """Fixed-shape headlines name every chiller once; the most severe result still comes first."""
+    trip = plant(Scenario.COMPRESSOR_TRIP)
+    ch4, ch5 = assess_chiller(trip, "CH4"), assess_chiller(trip, "CH5")
+    assert ch4.headline == "Confirmed excursion - both Chiller 4 probes above 5.0 °C."  # one chiller: unchanged
+    assert code_conclusion([ch4]) == ch4.headline
+    agree = assess_chiller(trip, "CH1")
+    assert agree.headline == "Chiller 1 probes agree and are within limits."
+    assert code_conclusion([agree, ch4, ch5]) == (
+        "Confirmed excursion - both probes above 5.0 °C in Chiller 4 and Chiller 5. " + agree.headline)

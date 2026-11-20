@@ -1,4 +1,4 @@
-"""ColdLine web layer: design system, Jinja components, page templates and the fixture preview router.
+"""ColdLine web layer: routes, design system, Jinja components and page templates.
 
 Public surface used by the application routes:
 
@@ -6,5 +6,6 @@ Public surface used by the application routes:
 * :func:`coldline.web.render.base_context` - the context every page needs (nav, clock, disclaimer, mode).
 * :func:`coldline.web.views.plant_view` - turns a :class:`~coldline.contracts.PlantSnapshot` into the mimic
   view model.
-* :mod:`coldline.web.preview` - fixture-backed ``/preview/*`` pages and ``/styleguide``.
+* :mod:`coldline.web.styleguide` - the ``/styleguide`` catalogue, built from replayed recordings.
+* :func:`coldline.web.inert.inert` - the template filter that makes a rendered component an inert sample.
 """

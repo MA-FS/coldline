@@ -4,7 +4,6 @@
 {% import "components/ui.html" as ui %}
 {% import "components/plant.html" as pl %}
 {% block content %}
-{% set P = href_prefix or "" %}
 <div class="page-head">
   <div>
     <h1>Audit log</h1>
@@ -19,7 +18,7 @@
 {% call ui.panel("Events", id="audit", count=events|length, body_cls="") %}
   {% if events %}
   <ul class="audit" id="audit-list">
-    {% for e in events %}{{ pl.audit_row(e, prefix=P) }}{% endfor %}
+    {% for e in events %}{{ pl.audit_row(e) }}{% endfor %}
   </ul>
   {% else %}
   <div class="panel-body">{{ ui.empty("No events yet", "Actions taken in this sandbox will appear here.", "list") }}</div>

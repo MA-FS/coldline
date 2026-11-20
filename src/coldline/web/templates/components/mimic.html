@@ -6,7 +6,7 @@
 {% macro _unit(v, u="°C") -%}{{ v }}{% if v != '—' %}<tspan class="m-label m-label--sm" dx="2">{{ u }}</tspan>{% endif %}{%- endmacro %}
 
 
-{% macro plant_mimic(p, selected="CH4", prefix="") -%}
+{% macro plant_mimic(p, selected="CH4") -%}
 <svg class="mimic" id="mimic-svg" viewBox="0 0 1060 600" role="group" aria-labelledby="mimic-title mimic-desc">
   <title id="mimic-title">Plant mimic: refrigeration, carcase chillers 1 to 6, boning room and load-out dock</title>
   <desc id="mimic-desc">{{ p.active_alarm_count }} active alarm(s).{% for c in p.chillers if c.alarm %} {{ c.name }}: {{ c.badge|lower }}.{% endfor %}</desc>
@@ -67,7 +67,7 @@
     <path d="M{{ cx }},104 V130" class="m-pipe" marker-end="url(#m-arrow)"/>
     <g class="m-unit" id="m-{{ c.id }}" tabindex="0" role="button" aria-pressed="{{ 'true' if c.id == selected else 'false' }}"
        aria-label="{{ c.name }}{% for t in c.tags %}, {{ t.tag }} {{ t.value }} °C{% if t.tone == 'stale' %} stale{% endif %}{% endfor %}{% if c.badge %}, alarm: {{ c.badge|lower }}{% endif %}"
-       hx-get="{{ prefix }}/chillers/{{ c.id }}" hx-target="#chiller-detail" hx-swap="outerHTML" hx-trigger="click">
+       hx-get="/chillers/{{ c.id }}" hx-target="#chiller-detail" hx-swap="outerHTML" hx-trigger="click">
       <rect x="{{ x }}" y="140" width="116" height="206" rx="4" class="m-frame{% if tone %} m-frame--{{ tone }}{% endif %}"/>
       <rect x="{{ x - 4 }}" y="136" width="124" height="214" rx="6" class="m-frame--hover"/>
       <text x="{{ cx }}" y="168" text-anchor="middle" class="m-title">{{ c.short }}</text>

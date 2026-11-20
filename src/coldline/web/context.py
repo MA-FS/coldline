@@ -16,6 +16,7 @@ from markupsafe import Markup
 
 from coldline.agent import AgentService, handover, load_eval_results
 from coldline.agent.context import EVIDENCE_AT
+from coldline.agent.evidence import DIVERGENCE_LIMIT_C
 from coldline.contracts import (
     Alarm,
     AlarmPriority,
@@ -137,6 +138,11 @@ def state_revision(plant: PlantSystems, run: RunTrace | None, approvals: list[Ap
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()[:12]
 
 
+def proposal_order(approvals: list[Approval]) -> list[Approval]:
+    """Approvals in the order they were proposed (AP-0001 first), the order every page lists them in."""
+    return sorted(approvals, key=lambda a: (len(a.id), a.id))
+
+
 def overview(rt: Runtime, v: Visitor) -> dict[str, Any]:
     run = latest_run(rt, v.sid)
     pv, detail = detail_context(v.plant, v.prefs.focus, run)
@@ -144,7 +150,7 @@ def overview(rt: Runtime, v: Visitor) -> dict[str, Any]:
     # The panel shows the proposals this run asked for, including pending ones an earlier run created on the
     # same evidence and this run reused; others stay on the Approvals page (and in the nav count).
     approvals = [a for a in every if run is not None and run.run_id in (a.run_ids or [a.run_id])]
-    approvals.sort(key=lambda a: (len(a.id), a.id))  # proposal order (AP-0001 first), as the stream adds them
+    approvals = proposal_order(approvals)  # as the stream adds them
     expired = [a for a in every if a.id in v.prefs.recent_expired and a.status == ApprovalStatus.EXPIRED]
     return {
         **shell(rt, v, "overview", "Plant overview"),
@@ -239,7 +245,7 @@ def run_chart(plant: PlantSystems, run: RunTrace) -> Markup | None:
         width=400,
         height=190,
         events=_alarm_events(snap.alarms, [primary, reference]),
-        divergence=(primary, reference, 2.0),
+        divergence=(primary, reference, DIVERGENCE_LIMIT_C),
         y_min=min([1.0, *vals]),
         y_max=max([7.0, *vals]),
         limit=PROBE_LIMIT_LINE,
@@ -455,7 +461,7 @@ def _seconds(ms: float) -> str:
 
 
 def approvals_context(rt: Runtime, v: Visitor, status: str) -> dict[str, Any]:
-    items = rt.agent.list_approvals(v.sid)
+    items = proposal_order(rt.agent.list_approvals(v.sid))
     valid = {s.value for s in ApprovalStatus}
     status = status if status in valid else "all"
     shown = items if status == "all" else [a for a in items if a.status == status]

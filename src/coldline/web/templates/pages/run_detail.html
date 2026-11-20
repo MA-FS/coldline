@@ -6,15 +6,14 @@
 {% import "components/ui.html" as ui %}
 {% import "components/agent.html" as ag %}
 {% block content %}
-{% set P = href_prefix or "" %}
 <div class="page-head">
   <div>
-    <div class="eyebrow"><a href="{{ P }}/runs">Agent runs</a> / {{ run.run_id }}</div>
+    <div class="eyebrow"><a href="/runs">Agent runs</a> / {{ run.run_id }}</div>
     <h1 style="margin-top: 4px">{{ SCENARIO_LABELS[run.scenario][0] if run.scenario else 'Investigation' }} <span class="muted mono" style="font-size: 18px; font-weight: 500">{{ run.run_id }}</span></h1>
   </div>
   <div class="page-actions">
     {{ ui.mode_badge(run.mode) }} {{ ui.status_badge(run.status) }}
-    {% if run.handover_note %}{{ ui.button("Handover note", "outline", "doc", href=P ~ "/handover?run_id=" ~ run.run_id) }}{% endif %}
+    {% if run.handover_note %}{{ ui.button("Handover note", "outline", "doc", href="/handover?run_id=" ~ run.run_id) }}{% endif %}
   </div>
 </div>
 
@@ -28,7 +27,7 @@
   <div><dt>Guardrail checks</dt><dd>{{ run.steps|selectattr('kind', 'equalto', 'guardrail')|list|length }}</dd></div>
 </dl>
 
-{% if run.conclusion %}<div style="margin-bottom: var(--s-4)">{{ ag.conclusion(run.conclusion, run.confidence) }}</div>{% endif %}
+{% if run.conclusion %}<div style="margin-bottom: var(--s-4)">{{ ag.conclusion(run.conclusion, run_confidence(run)) }}</div>{% endif %}
 
 <div class="run-layout">
   {% call ui.panel("Trace", id="trace", meta=("Latency bar shows each step's share of the run")) %}
@@ -70,7 +69,7 @@
 
     {% if run.approvals %}
     {% call ui.panel("Proposed actions", id="approvals", count=run.approvals|length) %}
-      <div class="stack-sm">{% for a in run.approvals %}{{ ag.approval_card(a, compact=True, prefix=P) }}{% endfor %}</div>
+      <div class="stack-sm">{% for a in run.approvals %}{{ ag.approval_card(a, compact=True) }}{% endfor %}</div>
     {% endcall %}
     {% endif %}
 

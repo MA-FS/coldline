@@ -115,8 +115,8 @@ def test_status_reads_allocate_nothing_and_idle_entries_expire() -> None:
 
 
 def test_one_address_cannot_hold_both_live_slots_or_the_whole_cap() -> None:
-    """The review's case: with two live slots and a shared cap, one address could occupy both slots and
-    spend the day's budget. It now gets one slot at a time and a share of the cap."""
+    """With two live slots and a shared cap, one address gets one slot at a time and only its share of the cap,
+    so it cannot occupy both slots or spend the day's budget."""
     g = guard(Clock(), daily_cap_usd=3.0, max_concurrent=2, origin_daily_usd_cap=1.0, min_call_reserve_usd=0.05)
     me, other = "203.0.113.7", "198.51.100.2"
     assert g.admit("a", origin=me) == ""
@@ -131,7 +131,7 @@ def test_one_address_cannot_hold_both_live_slots_or_the_whole_cap() -> None:
     assert "share of today's live-run budget (US$1.00)" in g.admit("d", origin=me)
 
 
-# --------------------------------------------------------------------------- bounds that hold (M1)
+# --------------------------------------------------------------------------- bounds that hold
 
 
 def test_reservation_covers_every_attempt_the_request_allows() -> None:
@@ -165,7 +165,7 @@ def _two_attempts(model: str = "claude-sonnet-5") -> SimpleNamespace:
 
 
 def test_every_billed_attempt_is_settled_at_its_own_rate() -> None:
-    """The review's case: two equal-priced attempts settled as one. Each attempt now counts."""
+    """Two equal-priced attempts (a decline, then the fallback's answer) settle as two charges, not one."""
     from coldline.agent.model import billed_usage
 
     usage = billed_usage(_two_attempts())
@@ -324,7 +324,7 @@ async def test_lost_response_keeps_its_reservation_until_reconciled(tmp_path) ->
     assert clean.status("s", live_enabled=True, api_key_present=True).spent_today_usd == 0
 
 
-# --------------------------------------------------------------------------- a ledger that fails closed (M2)
+# --------------------------------------------------------------------------- a ledger that fails closed
 
 
 def test_reservation_is_journalled_before_the_call_and_survives_a_restart(tmp_path) -> None:
@@ -431,7 +431,8 @@ def test_a_damaged_ledger_never_stops_startup_and_is_quarantined(tmp_path, conte
 
 
 def test_the_app_starts_and_replays_with_a_damaged_ledger(tmp_path) -> None:
-    """Cold start with the audit's file: live off with a visible reason, the hero replay still completes."""
+    """Cold start on a ledger whose spend overflows a float (10**310): live is off with a visible reason, and the
+    hero replay still completes."""
     yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
     damaged = json.dumps({"day": yesterday, "spent_usd": 10**310})
     (tmp_path / "agent_spend.json").write_text(damaged)
@@ -472,12 +473,12 @@ def test_a_valid_ledger_loads_and_the_version_1_format_is_migrated(tmp_path) -> 
     assert status.unreconciled_usd == pytest.approx(0.2)
 
 
-# --------------------------------------------------------------------------- one writer, liabilities kept (M5)
+# --------------------------------------------------------------------------- one writer, liabilities kept
 
 
 def test_a_second_writer_on_the_same_ledger_is_refused(tmp_path) -> None:
-    """The review's case: two guards on one US$1 ledger each admitted a US$0.60 reservation. The second guard
-    cannot take the writer lock, so it admits nothing and never touches the file."""
+    """Two guards on one US$1 ledger must not each admit a US$0.60 reservation. The second guard cannot take the
+    writer lock, so it admits nothing and never touches the file."""
     path = tmp_path / "agent_spend.json"
     first, second = guard(Clock(), state_path=path), guard(Clock(), state_path=path)
     first.reserve(0.6)
@@ -624,8 +625,8 @@ async def test_unknown_spend_is_shown_as_unreconciled_not_as_a_confirmed_zero() 
 
 
 def _declined_then_answered(category: str | None, declined_output: int = 0, with_block: bool = True):
-    """The review's case: a primary that declined before any output (1,000 input tokens reported) and a
-    fallback that answered for US$0.003. The ``fallback`` block names the decline's category."""
+    """A primary that declined before any output (1,000 input tokens reported) and a fallback that answered
+    for US$0.003. The ``fallback`` block names the decline's category."""
     declined = SimpleNamespace(type="message", model="claude-sonnet-5-5", input_tokens=1000,
                                output_tokens=declined_output, cache_creation_input_tokens=0, cache_read_input_tokens=0)
     answered = SimpleNamespace(type="fallback_message", model="claude-sonnet-5", input_tokens=1000, output_tokens=100,

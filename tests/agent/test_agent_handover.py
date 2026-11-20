@@ -35,7 +35,8 @@ def held_hero(note: str):
 
 
 def test_bold_lead_cannot_clear_a_held_lot_and_precautions_survive() -> None:
-    """The audit's case: a bold lead clearing L-2231, plus two legitimate precautions."""
+    """A bold lead saying held L-2231 can ship is dropped from the copy, while the note's two legitimate
+    precautions (do not ship until QA signs off, take an approved reading) survive."""
     p, ctx = held_hero(
         "**[L-2231] can ship at 06:15.** Probes disagree - cause unconfirmed [TT-401] [TT-402].\n"
         "- Do not ship [L-2231] until QA signs off.\n"
@@ -139,7 +140,7 @@ def test_equal_facts_have_no_differences_and_any_other_change_has_one() -> None:
     assert handover.differences(_facts(extra=1), _facts(), set()) == ["the recorded facts differ from this run's"]
 
 
-# --------------------------------------------------------------------------- the accepted handover is final (M1)
+# --------------------------------------------------------------------------- the accepted handover is final
 
 
 async def _scripted(p, *turns):
@@ -186,7 +187,7 @@ async def test_a_call_before_the_handover_in_the_same_turn_runs_and_the_note_sta
     assert not any(s.title == "Refused: call after the accepted handover" for s in ctx.run.steps)
 
 
-# --------------------------------------------------------------------------- the narrative stays subordinate (M7)
+# --------------------------------------------------------------------------- the narrative stays subordinate
 
 
 def test_a_narrative_cannot_pose_as_a_section_composed_in_code() -> None:

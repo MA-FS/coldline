@@ -124,8 +124,8 @@ def _propose_release(ctx):
 
 
 def test_release_is_refused_without_verified_clearance() -> None:
-    """The review's case: on the mismatch fixture a QA click released L-2231 on a reading the model only
-    described. The release is now refused before any proposal exists, and the hold stays."""
+    """On the probe mismatch, a release resting on a reading the model only described (not one verified in
+    code) is refused before any proposal exists, so no QA click can release L-2231, and the hold stays."""
     p, ctx, _ = _held_lot(Scenario.PROBE_MISMATCH)
     out = _propose_release(ctx)
     assert out.steps[0].title == "Evidence precondition failed: release needs verified clearance"

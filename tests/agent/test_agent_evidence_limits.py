@@ -106,7 +106,7 @@ both_orders = pytest.mark.parametrize("swap", [False, True], ids=["primary", "re
 
 LIMIT = EXCURSION_LIMIT_C
 VERDICT_CASES = {
-    # The review's case: fresh, synchronous, stable, agreeing within 2 °C, one above the limit.
+    # Fresh, synchronous and stable probes that agree within 2 °C, with one above the limit.
     "one_above_one_below": ((flat(6.0), flat(4.5)), Verdict.POSSIBLE_EXCURSION),
     "one_just_above": ((flat(LIMIT + 0.1), flat(LIMIT - 0.1)), Verdict.POSSIBLE_EXCURSION),
     "both_above": ((flat(6.0), flat(5.5)), Verdict.EXCURSION_CONFIRMED),

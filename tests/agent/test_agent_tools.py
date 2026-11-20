@@ -203,7 +203,7 @@ def test_hold_cannot_rest_on_untrusted_text_or_unrelated_records() -> None:
     assert p.get_lot("L-2231").status.value == "ready"
 
 
-# --------------------------------------------------------------------------- headings are code-set (M7)
+# --------------------------------------------------------------------------- headings are code-set
 
 
 def test_refusal_headings_never_carry_the_name_the_model_asked_for() -> None:
@@ -239,7 +239,7 @@ def test_the_citation_table_labels_a_work_order_title_as_ticket_text() -> None:
     assert "title (CMMS ticket text)" in ref["WO-1042"].detail
 
 
-# --------------------------------------------------------------------------- dispatch dates (M2)
+# --------------------------------------------------------------------------- dispatch dates
 
 
 def test_a_passed_clock_time_is_proposed_for_the_next_day_and_the_card_says_so() -> None:

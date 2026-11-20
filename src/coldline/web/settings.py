@@ -24,7 +24,6 @@ class WebSettings:
     # Signs the session cookie. Unset means a random key per process: sessions are in memory anyway, so a
     # restart loses nothing a stable key would keep.
     secret_key: str = ""
-    enable_previews: bool = True  # fixture-backed /preview/* pages; off in production
     client_ip_header: str = ""  # e.g. "Fly-Client-IP" behind a proxy that sets it; "" = socket peer
     session_ttl_s: int = 7200
     max_sessions: int = 200
@@ -38,12 +37,9 @@ class WebSettings:
     def from_env(cls, env: Mapping[str, str] | None = None) -> WebSettings:
         env = os.environ if env is None else env
         production = env.get("COLDLINE_ENV", "").strip().lower() == "production"
-        previews_raw = env.get("COLDLINE_PREVIEWS", "").strip().lower()
-        previews = (not production) if previews_raw == "" else previews_raw in {"1", "true", "yes", "on"}
         return cls(
             production=production,
             secret_key=env.get("COLDLINE_SECRET_KEY", "").strip(),
-            enable_previews=previews,
             client_ip_header=env.get("COLDLINE_CLIENT_IP_HEADER", "").strip(),
             session_ttl_s=_int(env, "COLDLINE_SESSION_TTL_S", 7200),
             max_sessions=_int(env, "COLDLINE_MAX_SESSIONS", 200),

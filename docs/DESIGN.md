@@ -4,9 +4,10 @@ ColdLine's UI follows **ISA-101 high-performance HMI** conventions: a calm, dens
 where colour is a signal, not decoration. An operator should be able to glance at the overview and see the one
 thing that is wrong.
 
-Live reference: `/styleguide` renders every token and component from synthetic fixtures. In development every
-page can also be previewed under `/preview/...` (see [Previews](#previews)); production hides those routes. The visual target is
-[`reference-mockup-a.png`](reference-mockup-a.png).
+Live reference: `/styleguide` renders every token and component in the normal page shell, with samples
+replayed from the bundled recordings (see [Styleguide](#styleguide)). The overview in the hero scenario:
+
+![Plant overview: Chiller 4 probe mismatch, agent panel awaiting approval](img/overview.png)
 
 ## Rules
 
@@ -56,16 +57,17 @@ src/coldline/web/
   render.py          Jinja2Templates instance, filters (hhmm, usd, ms, temp, cite, markdown…), base_context()
   views.py           PlantSnapshot → PlantView (mimic state rules), chiller_detail(), citations, safe markdown
   charts.py          trend_svg() and sparkline_svg(): server-rendered SVG, no JS chart library
-  fixtures.py        Synthetic hero-scenario data for previews and tests
-  preview.py         /preview/* (development only) and /styleguide routes
-  routes.py          Live pages, the chiller fragment and the SSE stream
+  routes.py          Pages (including /styleguide), the chiller fragment and the SSE stream
+  styleguide.py      /styleguide samples: bundled recordings replayed in scratch sandboxes, built once
+  inert.py           Rewrites a rendered component into an inert sample (scoped ids, no links or requests)
   routes_actions.py  POST controls and approval decisions (CSRF header + rate limits)
   context.py         Page contexts built from the visitor's sandbox and the agent service
   runtime.py         Session sandboxes, agent service, per-visitor prefs (mode, role, focus)
   security.py        Signed session cookie, CSRF check, rate limiter, security headers
   settings.py        Web settings from the environment
   static/css/        tokens.css · base.css (shell, layout) · components.css · pages.css (page layouts, mimic)
-  static/js/app.js   Theme toggle, menus, toasts, SSE scroll; ~80 lines, no framework
+  static/js/app.js   Client glue, no framework: theme toggle, toasts, shell and region refresh after state
+                     changes, SSE de-duplication and close handling, clipboard copy, mimic keyboard and scroll
   static/vendor/     htmx 2.0.3 + htmx-ext-sse 2.2.2 (vendored, so the app loads no third-party scripts)
   templates/
     base.html        App shell: disclaimer, top bar, nav, clock, mode badge, toasts
@@ -147,7 +149,7 @@ Stable ids for swaps: `#overview`, `#mimic`, `#chiller-detail`, `#agent-panel`, 
 | Replay / Live | `POST /session/mode` `{mode}` | `#overview` |
 | Reset plant | `POST /session/reset` | `#overview` |
 | Click a chiller | `GET /chillers/{id}` → `fragments/chiller_detail.html` | `#chiller-detail` (outerHTML) |
-| Approve / Decline | `POST /approvals/{id}/approve` `{idempotency_key}` · `/decline` → `fragments/approval_card.html` | `#approval-{id}` (outerHTML) |
+| Approve / Decline | `POST /approvals/{id}/approve` `{decision_token}` · `/decline` → `fragments/approval_card.html` | `#approval-{id}` (outerHTML) |
 | Approver role | `POST /session/role` `{role}` (Shift Supervisor · QA Manager) → 204 + `HX-Refresh` | page |
 | Live mimic refresh | `GET {poll_url}` every 5 s or on `plant-changed` | `#mimic` (hx-select) |
 | Agent stream | SSE `GET /runs/{id}/stream` | events: `step` → `fragments/agent_step.html` appended to `#agent-steps`; `conclusion` → `fragments/conclusion.html`; `approval` → compact approval card; `done` removes the working skeleton; `trace-step` → `fragments/trace_step.html` for the run page. Event ids are step numbers (`Last-Event-ID` resumes); both connecting elements carry `sse-close="done"` and `app.js` re-renders the region when the stream closes |
@@ -159,18 +161,24 @@ Every POST must carry the `X-ColdLine: 1` header (set once on `<body>` with `hx-
 inline script except the hashed pre-paint theme switch, and `htmx-config` turns off `eval`, so `hx-on` and
 `hx-trigger` filter expressions are not available. Put behaviour in `app.js` instead.
 
-## Previews
+## Styleguide
 
-| URL | Shows |
-|---|---|
-| `/preview/` | Overview, hero scenario finished, two approvals pending |
-| `/preview/?state=running` | Agent mid-run (SSE-connected panel) |
-| `/preview/?state=stale` | Reference probe stale: comparison withdrawn, approval expired |
-| `/preview/?state=trip` | C2 tripped, both probes rising |
-| `/preview/?state=idle` | Normal plant, agent idle |
-| `/preview/runs`, `/preview/runs/R-7842` | Run list and trace (also R-7843 stale, R-7839 poisoned email) |
-| `/preview/approvals`, `/preview/audit`, `/preview/evals`, `/preview/impact`, `/preview/handover`, `/preview/how-it-works` | Remaining pages |
-| `/styleguide` | Everything above, side by side |
+`/styleguide` (`web/styleguide.py`) replays each bundled recording in a scratch sandbox through the real agent
+service, then approves, declines and expires proposals the way a person would, so every component shows a
+state the app really produces: plant mimic (probe mismatch, stale reference probe, compressor trip), trend
+charts, chiller detail, step cards, conclusions, approval cards in all four states, the agent panel, alarm
+table and audit rows. Two states a finished replay never holds are derived from those runs: a step in flight,
+and a NEVER-tier request as the tool registry refuses it.
+
+The samples never depend on the visitor, so they are built and rendered once per process, on the first
+request, and every later visit renders only the page shell around them. They are not the visitor's plant,
+and run and approval ids such as `R-7841` and `AP-0001` also exist in visitor sessions, so each component
+instance is rewritten by `web/inert.py` to be inert without relying on htmx: ids are scoped per instance
+(with the `aria-labelledby` and SVG references to them), links keep their look but have no `href`, htmx and
+SSE attributes are removed, buttons are `type="button"`, forms have no `action` and their fields are
+disabled. The sample region also keeps `hx-disable`, and a capture-phase handler in `app.js` cancels clicks
+and keys (except Tab) inside it before any other handler or native default, so disclosures and menus in a
+sample stay as rendered.
 
 ## Accessibility
 

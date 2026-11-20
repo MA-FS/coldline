@@ -17,6 +17,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from coldline.contracts import RunTrace
 from coldline.web import context as cx
+from coldline.web import styleguide as sg
 from coldline.web.render import templates
 from coldline.web.runtime import Runtime, Visitor, runtime, visitor
 
@@ -150,6 +151,13 @@ async def shell_fragment(request: Request, v: V, rt: RT) -> HTMLResponse:
 @router.get("/how-it-works", response_class=HTMLResponse)
 async def how_it_works(request: Request, v: V, rt: RT) -> HTMLResponse:
     return page(request, "pages/how_it_works.html", cx.shell(rt, v, "how", "How it works"))
+
+
+@router.get("/styleguide", response_class=HTMLResponse)
+async def styleguide(request: Request, v: V, rt: RT) -> HTMLResponse:
+    """The design system: the visitor's normal shell around samples from replayed recordings, which are
+    built on the first request and then reused (they never depend on the visitor)."""
+    return page(request, "pages/styleguide.html", {**cx.shell(rt, v, "", "Styleguide"), "samples": await sg.SAMPLES.html()})
 
 
 # --------------------------------------------------------------------------- agent stream

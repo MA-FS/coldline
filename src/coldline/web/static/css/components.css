@@ -210,7 +210,7 @@
 .approval-change-line { margin: 0; color: var(--text-1); font-size: var(--fs-md); }
 .approval-quote { margin: 6px 0 0; padding: 6px 10px; background: var(--bg-inset); border: 1px solid var(--line-soft); border-radius: var(--r-1); color: var(--text-1); font-size: var(--fs-sm); white-space: pre-wrap; word-break: break-word; }
 .approval-checks ul { margin: 0; padding-left: 1.2em; color: var(--text-2); font-size: var(--fs-sm); }
-.approval-more { font-size: var(--fs-sm); width: max-content; max-width: 100%; }
+.approval-more { font-size: var(--fs-sm); width: fit-content; max-width: 100%; overflow-wrap: anywhere; }
 .approval-payload { font-family: var(--font-mono); font-size: 12px; background: var(--bg-inset); border: 1px solid var(--line-soft); border-radius: var(--r-1); padding: 8px 10px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
 .approval-actions { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; }
 .approval-tech { font-size: var(--fs-xs); color: var(--text-3); }
@@ -277,6 +277,7 @@
 .trend-value small { font-size: 16px; font-weight: var(--fw-semibold); }
 .trend-dir { color: var(--text-2); font-size: var(--fs-sm); display: inline-flex; align-items: center; gap: 4px; }
 .legend { display: flex; gap: var(--s-3); flex-wrap: wrap; color: var(--text-3); font-size: var(--fs-xs); font-family: var(--font-mono); }
+.legend > * { white-space: nowrap; }  /* wrap between items, never between a swatch and its label */
 .legend i { display: inline-block; width: 14px; height: 0; border-top: 2px solid var(--text-1); vertical-align: middle; margin-right: 5px; }
 .legend i.amber { border-color: var(--amber); }
 .legend i.ghost { border-color: var(--text-4); border-top-width: 1.5px; }

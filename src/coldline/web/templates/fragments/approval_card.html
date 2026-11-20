@@ -1,4 +1,4 @@
 {#- HTMX fragment: approval card after approve/decline (outerHTML swap of #approval-{id}).
-    Context: approval, compact (bool), href_prefix -#}
+    Context: approval, compact (bool) -#}
 {% import "components/agent.html" as ag %}
-{{ ag.approval_card(approval, compact=compact|default(False), prefix=href_prefix|default('')) }}
+{{ ag.approval_card(approval, compact=compact|default(False)) }}

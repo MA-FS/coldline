@@ -89,7 +89,7 @@
 {%- endmacro %}
 
 {#- Audit row -#}
-{% macro audit_row(e, prefix="") -%}
+{% macro audit_row(e) -%}
 {% set is_agent = e.actor == 'agent' %}
 {% set is_system = e.actor == 'system' %}
 <li class="audit-row{% if e.action.startswith('refuse') %} audit-row--refuse{% endif %}" id="audit-{{ e.id }}">
@@ -97,6 +97,6 @@
   <span class="audit-actor{% if is_agent %} audit-actor--agent{% endif %}"><span class="avatar">{{ icon('sparkle' if is_agent else ('gear' if is_system else 'user')) }}</span>{{ e.actor }}</span>
   <span class="audit-action">{{ e.action }} <span class="target">→ {{ e.target }}</span></span>
   <div class="audit-detail">{{ e.detail }}{% if e.evidence_ids %}<div>{{ ui.ev_list(e.evidence_ids) }}</div>{% endif %}</div>
-  <span class="audit-run">{% if e.run_id %}<a href="{{ prefix }}/runs/{{ e.run_id }}">{{ e.run_id }}</a>{% else %}<span class="dim">{{ e.id }}</span>{% endif %}</span>
+  <span class="audit-run">{% if e.run_id %}<a href="/runs/{{ e.run_id }}">{{ e.run_id }}</a>{% else %}<span class="dim">{{ e.id }}</span>{% endif %}</span>
 </li>
 {%- endmacro %}

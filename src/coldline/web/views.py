@@ -13,7 +13,9 @@ from html import escape
 
 from markupsafe import Markup
 
+from coldline.agent.evidence import DIVERGENCE_LIMIT_C
 from coldline.agent.handover import DISPOSITION_HEADING, NARRATIVE_HEADING, VERIFIED_HEADING
+from coldline.citations import cited_ids, replace_citations
 from coldline.contracts import (
     Alarm,
     AlarmPriority,
@@ -263,21 +265,17 @@ def plant_view(snap: PlantSnapshot, trends: list[Trend] | None = None,
 
 # --------------------------------------------------------------------------- evidence / citations
 
-_CITE = re.compile(r"\[([A-Z][A-Z0-9]*-[A-Za-z0-9.\-]+)\]")
-
-
 def cite_chips(text: str) -> Markup:
-    """Escape text and turn [record-id] citations into chips."""
+    """Escape text and turn [record-id] citations (see :mod:`coldline.citations`) into chips."""
 
-    def chip(m: re.Match) -> str:
-        rid = m.group(1)
+    def chip(rid: str) -> str:
         kind, label = evidence_kind(rid)
         return (
             f'<a class="cite cite--{kind}" href="#ev-{escape(rid)}" title="{label}: {escape(rid)}">'
             f"{escape(rid)}</a>"
         )
 
-    return Markup(_CITE.sub(chip, str(escape(text))))
+    return Markup(replace_citations(escape(text), chip))
 
 
 def _inline(text: str) -> str:
@@ -363,12 +361,9 @@ def handover_markdown(note: str) -> Markup:
     return Markup("\n".join(out))
 
 
-def citations(md: str) -> list[str]:
-    seen: list[str] = []
-    for m in _CITE.finditer(md or ""):
-        if m.group(1) not in seen:
-            seen.append(m.group(1))
-    return seen
+def citations(md: str | None) -> list[str]:
+    """The record ids a note cites, in order; none for a run without a note."""
+    return cited_ids(md or "")
 
 
 # --------------------------------------------------------------------------- chiller detail
@@ -380,14 +375,15 @@ def chiller_detail(
     asset_id: str,
     trends: list[Trend],
     events: list | None = None,
-    divergence_c: float = 2.0,
 ) -> dict:
     """Context for the ``chiller_detail`` macro / ``#chiller-detail`` fragment.
 
     ``trends`` should be the asset's two probe trends (primary first). ``events`` are
-    :class:`coldline.web.charts.ChartEvent` markers (door open, alarm).
+    :class:`coldline.web.charts.ChartEvent` markers (door open, alarm). The probe gap is shaded above the
+    divergence limit the evidence checks use.
     """
-    from coldline.web.charts import Series, trend_svg  # local: avoid import cycle in type checkers
+    # local: avoid import cycle in type checkers
+    from coldline.web.charts import PROBE_LIMIT_LINE, Series, trend_svg
 
     asset = next(a for a in snap.assets if a.id == asset_id)
     chiller = next(c for c in plant.chillers if c.id == asset_id)
@@ -412,7 +408,8 @@ def chiller_detail(
                 events=events or [],
                 y_min=y_lo,
                 y_max=y_hi,
-                divergence=(ordered[0].tag, ordered[1].tag, divergence_c)
+                limit=PROBE_LIMIT_LINE,
+                divergence=(ordered[0].tag, ordered[1].tag, DIVERGENCE_LIMIT_C)
                 if other is not None and i == 0
                 else None,
                 title=f"{tr.tag} {tr.description}, last 60 minutes",

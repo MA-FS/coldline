@@ -52,8 +52,8 @@ from coldline.agent.evidence import (
     Assessment,
     code_conclusion,
     evidence_cap,
-    extract_citations,
 )
+from coldline.citations import cited_ids
 from coldline.contracts import (
     Approval,
     ApprovalStatus,
@@ -520,13 +520,6 @@ def disposition_state(systems: PlantSystems, lot_ids: Iterable[str], approvals: 
                         "due": lot.dispatch_due.isoformat() if lot.dispatch_due else None}
     return {"incident": systems.snapshot().incident, "lots": lots,
             "approvals": {a.id: a.status.value for a in approvals}}
-
-
-_CITED = re.compile(r"\[([A-Z][A-Z0-9]*-[A-Za-z0-9.\-]+)\]")
-
-
-def cited_ids(note: str) -> list[str]:
-    return list(dict.fromkeys([*extract_citations(note), *_CITED.findall(note)]))
 
 
 def capture(ctx: RunContext, note: str) -> dict[str, Any]:

@@ -31,13 +31,13 @@ from coldline.agent.evidence import (
     Assessment,
     Verdict,
     assess_chiller,
-    extract_citations,
     gate_conclusion,
     probe_status,
     probe_tags,
     release_clearance,
 )
 from coldline.agent.injection import screen_text, wrap_untrusted
+from coldline.citations import cited_ids
 from coldline.contracts import (
     Alarm,
     InboxMessage,
@@ -610,7 +610,7 @@ def write_handover_note(ctx: RunContext, args: HandoverIn) -> ToolResult:
     if missing:
         raise Refusal("Handover rejected: required lookups missing",
                       f"Before the handover can be accepted, call: {', '.join(missing)}.")
-    citations = extract_citations(args.note_markdown)
+    citations = cited_ids(args.note_markdown)
     if not citations:
         raise Refusal("Handover rejected: no citations", "Cite every record you relied on as [ID].")
     _require_seen(ctx, citations, "Handover rejected: unverified citations")
@@ -633,7 +633,8 @@ def write_handover_note(ctx: RunContext, args: HandoverIn) -> ToolResult:
     run.conclusion, run.confidence, run.handover_note = gate.conclusion, gate.confidence, note
     run.extra["evidence"] = [a.model_dump(mode="json") for a in assessments]
     run.extra["gate"] = {"model_conclusion": gate.model_conclusion, "model_confidence": gate.model_confidence,
-                         "cap": gate.cap, "rewritten": gate.rewritten, "removed": removed}
+                         "cap": gate.cap, "rewritten": gate.rewritten, "removed": removed,
+                         "flagged": list(ctx.flagged_records())}
     run.extra["handover_facts"] = facts
     # The note is a snapshot: store what it was composed from, so a later reader can see what changed since.
     run.extra["handover_snapshot"] = handover.capture(ctx, note)

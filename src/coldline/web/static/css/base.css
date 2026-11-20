@@ -100,8 +100,8 @@ hr { border: 0; border-top: 1px solid var(--line); margin: var(--s-4) 0; }
 .footer a { color: var(--text-3); }
 
 /* ------------------------------------------------------------------ layout primitives */
-.stack { display: flex; flex-direction: column; gap: var(--s-4); }
-.stack-sm { display: flex; flex-direction: column; gap: var(--s-2); }
+.stack { display: flex; flex-direction: column; gap: var(--s-4); min-width: 0; }
+.stack-sm { display: flex; flex-direction: column; gap: var(--s-2); min-width: 0; }
 .row { display: flex; align-items: center; gap: var(--s-2); }
 .row-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
 .spacer { flex: 1; }

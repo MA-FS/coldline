@@ -15,7 +15,7 @@ how to change it safely, and how to tell whether a change made it better or wors
 | `service.py` | Public API for the web layer. Sessions, background runs, streaming, approvals, live vs replay. |
 | `loop.py` | The bounded tool-use loop (an async generator of `TraceStep`) and run finalisation. |
 | `tools.py` | Tool registry: typed inputs, tiers, scopes, NEVER-tier refusals, handover gate. |
-| `evidence.py` | Deterministic checks: probe freshness and divergence, verdicts, confidence cap, citations. |
+| `evidence.py` | Deterministic checks: probe freshness and divergence, verdicts, confidence cap. |
 | `approvals.py` | APPROVE-tier proposals: evidence binding, idempotency, expiry, audit. |
 | `handover.py` | Handover integrity: the code-composed disposition and checks, the filtered model notes, replay check. |
 | `injection.py` | Delimiting and screening of untrusted text (inbox, ticket notes). |
@@ -47,7 +47,7 @@ agent.revalidate_approvals(session_id, plant)  # expire pending approvals whose 
 agent.forget_session(session_id)     # call when the visitor's sandbox expires (cancels a running run)
 ```
 
-`start_run` returns the run already in progress if the session has one. `stream(run_id, after=n)` yields
+`start_run` returns the run already in progress if the session has one. `stream(session_id, run_id, after=n)` yields
 raw `TraceStep`s from index `n`, so a reconnecting client can resume. `public_run_json(run)` serialises a
 run without the raw model turns. `load_eval_results()` returns the Evals page data.
 

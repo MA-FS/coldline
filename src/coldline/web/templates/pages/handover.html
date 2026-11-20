@@ -7,7 +7,6 @@
 {% import "components/ui.html" as ui %}
 {% import "components/agent.html" as ag %}
 {% block content %}
-{% set P = href_prefix or "" %}
 <div class="page-head">
   <div>
     <h1>Shift handover</h1>
@@ -16,7 +15,7 @@
   <div class="page-actions">
     {% if run and run.handover_note %}
     {{ ui.button("Copy as text", "outline", "doc", attrs='data-copy="#handover-text"') }}
-    {{ ui.button("Open trace " ~ run.run_id, "ghost", "arrow-right", href=P ~ "/runs/" ~ run.run_id) }}
+    {{ ui.button("Open trace " ~ run.run_id, "ghost", "arrow-right", href="/runs/" ~ run.run_id) }}
     {% endif %}
   </div>
 </div>
@@ -47,7 +46,7 @@
     </div>
   </article>
   <aside class="stack">
-    {% if run.conclusion %}{{ ag.conclusion(run.conclusion, run.confidence, label="Conclusion as at " ~ ((sup.at or run.started_at)|hhmm)) }}{% endif %}
+    {% if run.conclusion %}{{ ag.conclusion(run.conclusion, run_confidence(run), label="Conclusion as at " ~ ((sup.at or run.started_at)|hhmm)) }}{% endif %}
     {% include "fragments/handover_now.html" %}
     {% call ui.panel("Sources cited", id="sources", count=sources|length, meta="As at " ~ ((sup.at or run.started_at)|hhmm) ~ ", with any change since") %}
       <table class="ev-table">

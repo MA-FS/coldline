@@ -11,7 +11,6 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from coldline.agent import AgentService
-from coldline.web import preview
 from coldline.web.render import STATIC_DIR, TEMPLATE_DIR, base_context, templates
 from coldline.web.routes import router as pages_router
 from coldline.web.routes_actions import router as actions_router
@@ -33,9 +32,6 @@ def create_app(settings: WebSettings | None = None, agent: AgentService | None =
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.include_router(pages_router)
     app.include_router(actions_router)
-    app.include_router(preview.styleguide_router)
-    if settings.enable_previews:
-        app.include_router(preview.router)
     app.add_middleware(
         SecurityMiddleware,
         signing_key=settings.signing_key(),

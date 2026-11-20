@@ -120,8 +120,7 @@ def held_lines(block: list[str]) -> list[str]:
 CASES = [
     ("probe_mismatch", False, [DISAGREE_HEADLINE]),
     ("probe_mismatch", True, ["Insufficient data - TT-402 stale; comparison withdrawn."]),
-    ("compressor_trip", False, ["Confirmed excursion - both Chiller 4 probes above 5.0 °C.",
-                                "Confirmed excursion - both Chiller 5 probes above 5.0 °C."]),
+    ("compressor_trip", False, ["Confirmed excursion - both probes above 5.0 °C in Chiller 4 and Chiller 5."]),
     ("door_open", False, ["Transient rise in Chiller 4 - recovered, probes agree."]),
     ("poisoned_email", False, ["Suspected prompt injection in"]),
 ]
@@ -165,13 +164,14 @@ def test_disposition_block_has_no_model_text(client: TestClient, scenario: str, 
     assert any(ADVERSARIAL in s.summary for s in run.steps), "model conclusion missing from the trace"
 
 
-def test_compressor_trip_with_the_audit_wording() -> None:
-    """The audit's case: confirmed excursion, two lots on hold, the model telling the shift to send the stock."""
+def test_a_compressor_trip_keeps_both_lots_held_when_the_model_says_ship() -> None:
+    """A confirmed excursion leaves both lots on hold even when the model tells the shift the stock is fit for
+    sale and should go to the customer: the copied disposition is set in code and repeats none of it."""
     with make_client("All affected stock is fit for sale. Send it to the customer now.") as c:
         _, page, _ = run_scenario(c, "compressor_trip")
     block = disposition(clipboard(page))
-    assert block[0] == ("Status: Confirmed excursion - both Chiller 4 probes above 5.0 °C. Confirmed excursion - "
-                        "both Chiller 5 probes above 5.0 °C. Evidence confidence: confirmed."), block[0]
+    assert block[0] == ("Status: Confirmed excursion - both probes above 5.0 °C in Chiller 4 and Chiller 5. "
+                        "Evidence confidence: confirmed."), block[0]
     held = [x for x in block if x.startswith("L-") and "on QA hold" in x]
     assert len(held) == 2 and all("Do not ship or load it until QA releases the hold" in x for x in held), block
     text = "\n".join(clipboard(page)).lower()
@@ -198,7 +198,7 @@ def test_chained_investigations_keep_every_held_lot_in_the_copy(order: tuple[str
     assert own and lots[:len(own)] == own, (lots, own)
 
 
-# --------------------------------------------------------------------------- a note is a snapshot (H1)
+# --------------------------------------------------------------------------- a note is a snapshot
 
 
 def banner(page: str) -> list[str]:
@@ -214,9 +214,9 @@ def sources(page: str) -> dict[str, str]:
 
 
 def test_an_earlier_note_is_marked_superseded_when_a_later_run_holds_its_lot(client: TestClient) -> None:
-    """The review's case: door open, then probe mismatch. The first note says L-2231 is not on hold while the
-    plant now holds it. Opened again, that note carries a superseded banner, inside the copied text, naming
-    the new hold; its sources show the lot as it was and as it is; the latest note stays current."""
+    """Door open, then probe mismatch: the first note says L-2231 is not on hold while the plant now holds it.
+    Opened again, that note carries a superseded banner, inside the copied text, naming the new hold; its
+    sources show the lot as it was and as it is; the latest note stays current."""
     first, _, plant = run_scenario(client, "door_open")
     second, latest_page, plant = run_scenario(client, "probe_mismatch")
     hold = plant.active_hold("L-2231")
@@ -261,9 +261,8 @@ def evidence_rows(page: str) -> dict[str, str]:
 
 
 def test_an_older_trace_shows_its_evidence_as_the_run_read_it(client: TestClient) -> None:
-    """The review's case: door open, then probe mismatch. The first run's trace showed L-2231 as held (the
-    plant now) under Evidence, beside its own snapshot saying it was not. Its evidence is now as the run read
-    it, and the hold appears only on a line labelled as now."""
+    """Door open, then probe mismatch: the first run's trace lists L-2231 under Evidence as that run read it
+    (not on hold), beside its own snapshot, and the later hold appears only on a line labelled as now."""
     first, _, plant = run_scenario(client, "door_open")
     run_scenario(client, "probe_mismatch")
     hold = plant.active_hold("L-2231")

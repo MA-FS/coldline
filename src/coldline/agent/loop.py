@@ -24,17 +24,17 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
 from coldline.agent.budget import BudgetExceeded, BudgetGuard, Reservation
 from coldline.agent.config import AgentSettings
 from coldline.agent.context import RunContext
 from coldline.agent.evidence import assess_chiller, gate_conclusion
-from coldline.agent.model import ModelClient, ModelError, ScriptExhausted
-from coldline.agent.pricing import reservation_usd, split_cost
+from coldline.agent.model import ModelClient, ModelError, ModelResponse, ScriptExhausted, ToolCall
+from coldline.agent.pricing import CallCost, Usage, reservation_usd, split_cost
 from coldline.agent.prompts import NUDGE, SYSTEM_PROMPT, build_trigger, prompt_version
-from coldline.agent.tools import ToolRegistry, affected_chillers
+from coldline.agent.tools import ToolOutcome, ToolRegistry, affected_chillers
 from coldline.contracts import ApprovalStatus, RunStatus, StepKind, Tier, TraceStep
 
 
@@ -65,18 +65,6 @@ class LiveRunAborted(Exception):
         self.reason = reason
 
 
-def _settle(budget: BudgetGuard | None, reservation: Reservation | None, actual_usd: float) -> None:
-    if budget is not None and reservation is not None:
-        budget.settle(reservation, actual_usd)
-
-
-def _retain(ctx: RunContext, budget: BudgetGuard, reservation: Reservation) -> None:
-    """A call whose outcome is unknown: the budget keeps its full reservation, and the run records it as
-    unreconciled so its cost is never shown as a confirmed zero."""
-    budget.retain(reservation)
-    ctx.run.extra["unreconciled_usd"] = round(ctx.run.extra.get("unreconciled_usd", 0.0) + reservation.usd, 6)
-
-
 FRAMING_TOKENS = 512  # request framing and per-message markers, added to the byte count
 PER_MESSAGE_TOKENS = 16
 
@@ -86,6 +74,167 @@ def input_token_bound(tools: list[dict], messages: list[dict]) -> int:
     SDK content blocks counted by their repr (which includes field names, so it over-counts)."""
     body = SYSTEM_PROMPT.encode() + json.dumps(tools).encode() + repr(messages).encode()
     return len(body) + FRAMING_TOKENS + PER_MESSAGE_TOKENS * len(messages)
+
+
+# --------------------------------------------------------------------------- spend for one model call
+
+
+@dataclass(frozen=True)
+class CallHold:
+    """The daily-cap reservation for one model call, from before the request until its cost is known.
+
+    Every way a call can end closes the hold exactly once: settled at the reported cost, released when no
+    call was made or the API returned an error, or retained when the outcome is unknown. Without a budget
+    (replay, scripted runs) there is nothing to reserve and closing is a no-op."""
+
+    ctx: RunContext
+    budget: BudgetGuard | None = None
+    reservation: Reservation | None = None
+
+    @classmethod
+    def reserve(cls, ctx: RunContext, budget: BudgetGuard | None, usd: Callable[[], float],
+                origin: str) -> CallHold:
+        """Reserve ``usd()`` against the daily cap; raises :class:`BudgetExceeded` when it does not fit."""
+        if budget is None:
+            return cls(ctx)
+        hold = cls(ctx, budget, budget.reserve(usd(), origin=origin))
+        # Counted per run: paid calls attempted, and spend whose outcome is unknown (see retain).
+        ctx.run.extra["live_calls"] = ctx.run.extra.get("live_calls", 0) + 1
+        return hold
+
+    def settle(self, response: ModelResponse, attempts: tuple[str, ...]) -> CallCost:
+        """Charge what the response reports. The cap counts the total; only ``measured`` is the step's
+        spend, and the estimated part is kept apart in ``run.extra["estimated_usd"]``."""
+        cost = split_cost(response.model, response.usage, attempts)
+        self._settle(cost.total)
+        if cost.estimated:
+            extra = self.ctx.run.extra
+            extra["estimated_usd"] = round(extra.get("estimated_usd", 0.0) + cost.estimated, 6)
+        return cost
+
+    def not_made(self) -> None:
+        """No request was sent (a scripted stand-in ran out of turns): release it and uncount the call."""
+        if self.reservation is not None:
+            self._settle(0.0)
+            self.ctx.run.extra["live_calls"] -= 1
+
+    def failed(self, exc: Exception) -> None:
+        """An API error response means nothing was generated, so the hold is released. A timeout or lost
+        connection may still have been processed and billed, so its reservation is kept."""
+        if isinstance(exc, TimeoutError) or getattr(exc, "billing_unknown", False):
+            self.retain()
+        else:
+            self._settle(0.0)
+
+    def retain(self) -> None:
+        """An unknown outcome: the budget keeps the full reservation, and the run records it as unreconciled
+        so its cost is never shown as a confirmed zero."""
+        if self.budget is None or self.reservation is None:
+            return
+        self.budget.retain(self.reservation)
+        extra = self.ctx.run.extra
+        extra["unreconciled_usd"] = round(extra.get("unreconciled_usd", 0.0) + self.reservation.usd, 6)
+
+    def _settle(self, actual_usd: float) -> None:
+        if self.budget is not None and self.reservation is not None:
+            self.budget.settle(self.reservation, actual_usd)
+
+
+# --------------------------------------------------------------------------- trace for one model call
+
+
+def _turn_log(ctx: RunContext, tools: list[dict]) -> list[dict]:
+    """Where a recorded run keeps its model turns, stamped with the prompt version they were made under."""
+    turns = ctx.run.extra.setdefault("model_turns", [])
+    ctx.run.extra["prompt_version"] = prompt_version(tools)
+    return turns
+
+
+def _turn_record(response: ModelResponse, latency_ms: int) -> dict:
+    """One model turn as stored for a recording, so replay can re-run the same decisions."""
+    return {
+        "think": response.text,
+        "tool_calls": [{"name": c.name, "input": c.input} for c in response.tool_calls],
+        "usage": response.usage.as_dict(),
+        "latency_ms": latency_ms,
+        "model": response.model,
+        "stop_reason": response.stop_reason,
+    }
+
+
+def _attempts_note(usage: Usage, estimated_usd: float) -> str:
+    """How a call that billed more than one attempt was charged, for the THINK step's usage line."""
+    unsure = [a for a in usage.attempts if not a.billing_known]
+    if unsure:
+        cats = ", ".join(sorted({a.category or "unknown category" for a in unsure}))
+        return (f" · {len(usage.attempts)} attempts, {len(unsure)} declined before any output ({cats}): "
+                f"+US${estimated_usd:.4f} estimated, not counted as measured")
+    return f" · {len(usage.attempts)} billed attempts" if len(usage.attempts) > 1 else ""
+
+
+def _emit_think(ctx: RunContext, call_no: int, limits: LoopLimits, response: ModelResponse, cost: CallCost,
+                measured_ms: int) -> TraceStep:
+    """The THINK step for a completed model call: what the model said or plans to call, and what it cost."""
+    u = response.usage
+    planned = ", ".join(c.name for c in response.tool_calls)
+    return ctx.emit(
+        StepKind.THINK,
+        f"Model call {call_no} (limit {limits.max_model_calls})",
+        summary=response.text or (f"Calling {planned}" if planned else "No further tool calls."),
+        result_preview=(f"in {u.total_input} tok ({u.cache_read_input_tokens} cached) · out "
+                        f"{u.output_tokens} tok · US${cost.measured:.4f} · {response.model}"
+                        f"{_attempts_note(u, cost.estimated)}"),
+        latency_ms=response.latency_ms or measured_ms,
+        input_tokens=u.total_input,
+        output_tokens=u.output_tokens,
+        cost_usd=cost.measured,
+    )
+
+
+def _complete_call(ctx: RunContext, hold: CallHold, response: ModelResponse, *, call_no: int, limits: LoopLimits,
+                   attempts: tuple[str, ...], turns: list[dict] | None, measured_ms: int) -> TraceStep:
+    """Account for a model call that returned: settle its cost, keep the turn for a recording when asked,
+    and emit the THINK step that shows it."""
+    cost = hold.settle(response, attempts)
+    if turns is not None:
+        turns.append(_turn_record(response, measured_ms))
+    return _emit_think(ctx, call_no, limits, response, cost, measured_ms)
+
+
+def _unusable_turn(response: ModelResponse, limits: LoopLimits) -> tuple[str, str, str] | None:
+    """(step title, summary, abort reason) when the model's turn cannot be acted on, so none of its tool
+    calls are run."""
+    if response.stop_reason == "refusal":
+        return ("Model declined the request", "The model stopped with a refusal; no tool calls were run.",
+                "model declined the request")
+    if response.stop_reason == "max_tokens":
+        return ("Model output limit reached",
+                f"Output hit max_tokens={limits.max_tokens_per_call}; tool calls discarded.",
+                "model output limit reached")
+    return None
+
+
+# --------------------------------------------------------------------------- tool calls
+
+
+async def _dispatch(ctx: RunContext, registry: ToolRegistry, call: ToolCall, delay_s: float) -> ToolOutcome:
+    if ctx.handover_accepted:
+        # The accepted handover ends the run: a later call in the same turn is refused, not run, so no write
+        # or proposal can disagree with the note that was just frozen.
+        return registry.refuse_after_handover(ctx, call.name, call.input)
+    if delay_s:
+        await asyncio.sleep(delay_s)
+    return registry.execute(ctx, call.name, call.input)
+
+
+def _tool_result(call: ToolCall, outcome: ToolOutcome) -> dict:
+    block = {"type": "tool_result", "tool_use_id": call.id, "content": outcome.content}
+    if outcome.is_error:
+        block["is_error"] = True
+    return block
+
+
+# --------------------------------------------------------------------------- the loop
 
 
 async def run_loop(
@@ -102,9 +251,8 @@ async def run_loop(
 ) -> AsyncIterator[TraceStep]:
     tools = registry.definitions()
     messages: list[dict] = [{"role": "user", "content": trigger or build_trigger(ctx.systems)}]
-    turns = ctx.run.extra.setdefault("model_turns", []) if record_turns else None
-    if record_turns:
-        ctx.run.extra["prompt_version"] = prompt_version(tools)
+    turns = _turn_log(ctx, tools) if record_turns else None
+    attempts = billable_models or (client.model,)  # primary first, then each named fallback
     started = time.monotonic()
     nudged = False
 
@@ -115,17 +263,12 @@ async def run_loop(
                            summary=f"Stopped after {limits.run_timeout_s:.0f} s of wall-clock time.")
             raise LiveRunAborted("run time limit reached")
 
-        reservation = None
-        attempts = billable_models or (client.model,)  # primary first, then each named fallback
-        if budget is not None:
-            worst = reservation_usd(attempts, input_token_bound(tools, messages), limits.max_tokens_per_call)
-            try:
-                reservation = budget.reserve(worst, origin=origin)
-            except BudgetExceeded as exc:
-                yield ctx.guardrail("Budget check: daily cost cap reached", str(exc))
-                raise LiveRunAborted("daily cost cap reached") from exc
-            # Counted per run: paid calls attempted, and spend whose outcome is unknown (see _retain).
-            ctx.run.extra["live_calls"] = ctx.run.extra.get("live_calls", 0) + 1
+        try:
+            hold = CallHold.reserve(ctx, budget, origin=origin, usd=lambda: reservation_usd(
+                attempts, input_token_bound(tools, messages), limits.max_tokens_per_call))
+        except BudgetExceeded as exc:
+            yield ctx.guardrail("Budget check: daily cost cap reached", str(exc))
+            raise LiveRunAborted("daily cost cap reached") from exc
 
         timeout = min(remaining, limits.call_timeout_s)
         t0 = time.monotonic()
@@ -136,69 +279,24 @@ async def run_loop(
                 timeout=timeout + 2.0,
             )
         except ScriptExhausted:  # a scripted stand-in ran out of turns: no call was made
-            _settle(budget, reservation, 0.0)
-            if reservation is not None:
-                ctx.run.extra["live_calls"] -= 1
+            hold.not_made()
             break
         except (ModelError, TimeoutError) as exc:
-            # An API error response means nothing was generated. A timeout or lost connection may still
-            # have been processed and billed, so its reservation is kept (and marked unreconciled).
-            unknown = isinstance(exc, TimeoutError) or getattr(exc, "billing_unknown", False)
-            if unknown and budget is not None and reservation is not None:
-                _retain(ctx, budget, reservation)
-            else:
-                _settle(budget, reservation, 0.0)
+            hold.failed(exc)
             reason = str(exc) or "model call timed out"
             yield ctx.emit(StepKind.ERROR, "Model call failed", summary=reason, ok=False)
             raise LiveRunAborted(reason) from exc
         except asyncio.CancelledError:
-            if budget is not None and reservation is not None:
-                _retain(ctx, budget, reservation)
+            hold.retain()
             raise
 
-        measured_ms = int((time.monotonic() - t0) * 1000)
-        call_cost = split_cost(response.model, response.usage, attempts)
-        cost = call_cost.measured  # spend the provider-reported usage establishes
-        _settle(budget, reservation, call_cost.total)  # the cap also counts what is only estimated
-        if call_cost.estimated:
-            ctx.run.extra["estimated_usd"] = round(ctx.run.extra.get("estimated_usd", 0.0) + call_cost.estimated, 6)
-        if turns is not None:
-            turns.append({
-                "think": response.text,
-                "tool_calls": [{"name": c.name, "input": c.input} for c in response.tool_calls],
-                "usage": response.usage.as_dict(),
-                "latency_ms": measured_ms,
-                "model": response.model,
-                "stop_reason": response.stop_reason,
-            })
-        u = response.usage
-        planned = ", ".join(c.name for c in response.tool_calls)
-        billed = f" · {len(u.attempts)} billed attempts" if len(u.attempts) > 1 else ""
-        unsure = [a for a in u.attempts if not a.billing_known]
-        if unsure:
-            cats = ", ".join(sorted({a.category or "unknown category" for a in unsure}))
-            billed = (f" · {len(u.attempts)} attempts, {len(unsure)} declined before any output ({cats}): "
-                      f"+US${call_cost.estimated:.4f} estimated, not counted as measured")
-        yield ctx.emit(
-            StepKind.THINK,
-            f"Model call {call_no} (limit {limits.max_model_calls})",
-            summary=response.text or (f"Calling {planned}" if planned else "No further tool calls."),
-            result_preview=(f"in {u.total_input} tok ({u.cache_read_input_tokens} cached) · out "
-                            f"{u.output_tokens} tok · US${cost:.4f} · {response.model}{billed}"),
-            latency_ms=response.latency_ms or measured_ms,
-            input_tokens=u.total_input,
-            output_tokens=u.output_tokens,
-            cost_usd=cost,
-        )
-
-        if response.stop_reason == "refusal":
-            yield ctx.emit(StepKind.ERROR, "Model declined the request", ok=False,
-                           summary="The model stopped with a refusal; no tool calls were run.")
-            raise LiveRunAborted("model declined the request")
-        if response.stop_reason == "max_tokens":
-            yield ctx.emit(StepKind.ERROR, "Model output limit reached", ok=False,
-                           summary=f"Output hit max_tokens={limits.max_tokens_per_call}; tool calls discarded.")
-            raise LiveRunAborted("model output limit reached")
+        yield _complete_call(ctx, hold, response, call_no=call_no, limits=limits, attempts=attempts, turns=turns,
+                             measured_ms=int((time.monotonic() - t0) * 1000))
+        unusable = _unusable_turn(response, limits)
+        if unusable is not None:
+            title, summary, reason = unusable
+            yield ctx.emit(StepKind.ERROR, title, ok=False, summary=summary)
+            raise LiveRunAborted(reason)
 
         messages.append({"role": "assistant", "content": response.raw_content})
         if not response.tool_calls:
@@ -210,20 +308,10 @@ async def run_loop(
 
         results = []
         for call in response.tool_calls:
-            if ctx.handover_accepted:
-                # The accepted handover ends the run: a later call in the same turn is refused, not run, so no
-                # write or proposal can disagree with the note that was just frozen.
-                outcome = registry.refuse_after_handover(ctx, call.name, call.input)
-            else:
-                if limits.tool_delay_s:
-                    await asyncio.sleep(limits.tool_delay_s)
-                outcome = registry.execute(ctx, call.name, call.input)
+            outcome = await _dispatch(ctx, registry, call, limits.tool_delay_s)
             for step in outcome.steps:
                 yield step
-            block = {"type": "tool_result", "tool_use_id": call.id, "content": outcome.content}
-            if outcome.is_error:
-                block["is_error"] = True
-            results.append(block)
+            results.append(_tool_result(call, outcome))
         messages.append({"role": "user", "content": results})  # all results in one user turn
         if ctx.handover_accepted:
             break

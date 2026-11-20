@@ -25,12 +25,13 @@ from coldline.contracts import (
     Tier,
 )
 from coldline.web import charts, views
+from coldline.web.inert import inert
 
 WEB_DIR = Path(__file__).parent
 TEMPLATE_DIR = WEB_DIR / "templates"
 STATIC_DIR = WEB_DIR / "static"
 PLANT_TZ = ZoneInfo("Australia/Perth")
-ASSET_VERSION = "4"  # bump to bust static caches
+ASSET_VERSION = "6"  # bump to bust static caches
 
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 env = templates.env
@@ -97,11 +98,25 @@ STATUS_TONE = {
 }
 PRIORITY_TONE = {AlarmPriority.LOW: "low", AlarmPriority.AMBER: "amber", AlarmPriority.RED: "red"}
 CONFIDENCE = {
-    "confirmed": ("Confirmed", "neutral"),
+    # The confidence the code's evidence checks allow (never more than the model claimed), not a verdict
+    # on the cause. Runs with no probe evidence get a label for what code did check (see run_confidence).
+    "confirmed": ("Confirmed by evidence checks", "neutral"),
+    "injection_flagged": ("Injection flagged", "amber"),
+    "no_evidence": ("No probe evidence checked", "muted"),
     "unconfirmed": ("Cause unconfirmed", "amber"),
     "insufficient_data": ("Insufficient data", "amber"),
     "refused": ("Request refused", "red"),
 }
+
+
+def run_confidence(run: Any) -> str:
+    """The badge key for a run's conclusion. "Confirmed by evidence checks" is only shown when the run
+    actually assessed probe evidence; otherwise the badge names what code verified instead."""
+    confidence = getattr(run, "confidence", None) or "unconfirmed"
+    extra = getattr(run, "extra", None) or {}
+    if confidence != "confirmed" or extra.get("evidence"):
+        return confidence
+    return "injection_flagged" if (extra.get("gate") or {}).get("flagged") else "no_evidence"
 
 
 def humanize(s: Any) -> str:
@@ -140,6 +155,7 @@ env.filters.update(
     tier_tone=lambda t: TIER_TONE.get(t, "read") if t else "",
     status_tone=lambda s: STATUS_TONE.get(s, "neutral"),
     priority_tone=lambda p: PRIORITY_TONE.get(p, "low"),
+    inert=inert,
 )
 
 env.globals.update(
@@ -148,6 +164,7 @@ env.globals.update(
     NAV=views.NAV,
     SCENARIO_LABELS=views.SCENARIO_LABELS,
     CONFIDENCE=CONFIDENCE,
+    run_confidence=run_confidence,
     StepKind=StepKind,
     Tier=Tier,
     ApprovalStatus=ApprovalStatus,
@@ -171,12 +188,8 @@ def base_context(
     title: str = "",
     pending_approvals: int = 0,
     live_available: bool = True,
-    href_prefix: str = "",
 ) -> dict[str, Any]:
-    """Context every page template expects (shell: disclaimer, top bar, nav, clock, mode).
-
-    ``href_prefix`` lets the preview router keep nav links inside ``/preview``.
-    """
+    """Context every page template expects (shell: disclaimer, top bar, nav, clock, mode)."""
     return {
         "active_nav": active,
         "now": now,
@@ -184,5 +197,4 @@ def base_context(
         "page_title": title,
         "pending_approvals": pending_approvals,
         "live_available": live_available,
-        "href_prefix": href_prefix,
     }

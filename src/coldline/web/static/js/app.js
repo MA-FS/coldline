@@ -2,6 +2,14 @@
 (function () {
   "use strict";
   var root = document.documentElement;
+  // Styleguide samples are pictures of components, not controls: no handler here acts inside them.
+  function inSample(el) { return !!(el && el.closest && el.closest(".sg-samples")); }
+  // Stop sample clicks and keys before any other handler or native default (disclosures, links) sees them.
+  ["click", "keydown"].forEach(function (type) {
+    document.addEventListener(type, function (e) {
+      if (inSample(e.target) && !(type === "keydown" && e.key === "Tab")) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
+  });
 
   // theme toggle (dark default, persisted per browser)
   document.addEventListener("click", function (e) {
@@ -13,7 +21,7 @@
       return;
     }
     // toast dismiss
-    var close = e.target.closest("[data-dismiss]");
+    var close = !inSample(e.target) && e.target.closest("[data-dismiss]");
     if (close) { var t = close.closest(".toast"); if (t) t.remove(); return; }
     // close open <details class="menu"> when clicking outside or on an item
     document.querySelectorAll("details.menu[open]").forEach(function (d) {
@@ -171,7 +179,7 @@
   // copy buttons: <button data-copy="#selector">
   document.addEventListener("click", function (e) {
     var btn = e.target.closest && e.target.closest("[data-copy]");
-    if (!btn) return;
+    if (!btn || inSample(btn)) return;
     var src = document.querySelector(btn.getAttribute("data-copy"));
     if (src && navigator.clipboard) {
       navigator.clipboard.writeText(src.innerText).then(function () { toast({ title: "Copied", tone: "ok" }); });
@@ -182,7 +190,7 @@
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Enter" && e.key !== " ") return;
     var unit = e.target.closest && e.target.closest(".m-unit");
-    if (!unit) return;
+    if (!unit || inSample(unit)) return;
     e.preventDefault();
     unit.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
@@ -196,7 +204,7 @@
   }
   function placeMimic() {
     var wrap = document.querySelector(".mimic-wrap");
-    if (!wrap || wrap.scrollWidth <= wrap.clientWidth + 4) return;
+    if (!wrap || inSample(wrap) || wrap.scrollWidth <= wrap.clientWidth + 4) return;
     var key = faultKey();
     if (key === mimicState.key) { wrap.scrollLeft = mimicState.left; return; }
     mimicState.key = key;
@@ -208,7 +216,7 @@
     mimicState.left = wrap.scrollLeft;
   }
   document.addEventListener("scroll", function (e) {
-    if (e.target && e.target.classList && e.target.classList.contains("mimic-wrap")) mimicState.left = e.target.scrollLeft;
+    if (e.target && e.target.classList && e.target.classList.contains("mimic-wrap") && !inSample(e.target)) mimicState.left = e.target.scrollLeft;
   }, true);
   document.body.addEventListener("htmx:afterSettle", placeMimic);
   placeMimic();
@@ -218,7 +226,9 @@
   // mark the selected chiller on the mimic
   document.addEventListener("click", function (e) {
     var unit = e.target.closest && e.target.closest(".m-unit");
-    if (!unit) return;
-    document.querySelectorAll(".m-unit").forEach(function (u) { u.setAttribute("aria-pressed", u === unit ? "true" : "false"); });
+    if (!unit || inSample(unit)) return;
+    document.querySelectorAll(".m-unit").forEach(function (u) {
+      if (!inSample(u)) u.setAttribute("aria-pressed", u === unit ? "true" : "false");
+    });
   });
 })();

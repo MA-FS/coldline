@@ -5,7 +5,6 @@
 {% from "components/icons.html" import icon %}
 {% import "components/ui.html" as ui %}
 {% block content %}
-{% set P = href_prefix or "" %}
 {% set passed = evals|selectattr('passed')|list|length %}
 {% set checks = evals|map(attribute='checks')|sum(start=[]) %}
 {% set checks_ok = checks|selectattr('passed')|list|length %}
@@ -34,7 +33,7 @@
       <td>{% for c in e.checks %}<span class="check check--{{ 'pass' if c.passed else 'fail' }}"{% if c.detail %} title="{{ c.detail }}"{% endif %}>{{ icon('check' if c.passed else 'x') }}{{ c.name }}</span>{% endfor %}</td>
       <td class="num">{{ e.cost_usd|usd(3) }}</td>
       <td class="num">{{ e.latency_ms|ms }}</td>
-      <td class="mono">{% if e.run_id %}<a href="{{ P }}/runs/{{ e.run_id }}">{{ e.run_id }}</a>{% else %}<span class="muted">{{ e.category|default('—') }}</span>{% endif %}</td>
+      <td class="mono">{% if e.run_id %}<a href="/runs/{{ e.run_id }}">{{ e.run_id }}</a>{% else %}<span class="muted">{{ e.category|default('—') }}</span>{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>

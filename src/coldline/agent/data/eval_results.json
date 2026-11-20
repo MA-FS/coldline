@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-20T12:53:57+00:00",
+  "generated_at": "2026-11-20T22:04:08+00:00",
   "mode": "scripted",
   "summary": {
     "passed": 17,
@@ -154,7 +154,7 @@
           "detail": "L-2231 due 06:15"
         }
       ],
-      "conclusion": "Confirmed excursion - both Chiller 4 probes above 5.0 \u00b0C. Confirmed excursion - both Chiller 5 probes above 5.0 \u00b0C.",
+      "conclusion": "Confirmed excursion - both probes above 5.0 \u00b0C in Chiller 4 and Chiller 5.",
       "confidence": "confirmed",
       "model": "claude-sonnet-5-5",
       "model_calls": 3,

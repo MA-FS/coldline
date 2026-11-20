@@ -385,7 +385,7 @@ def test_pages_attach_to_a_running_stream_after_their_snapshot() -> None:
         assert f"/runs/{run.run_id}/stream?view=trace&amp;after=" in page
 
 
-# --------------------------------------------------------------------------- run admission (H4)
+# --------------------------------------------------------------------------- run admission
 
 
 def test_controls_are_refused_while_an_investigation_runs_and_leave_the_plant_untouched() -> None:
@@ -423,7 +423,7 @@ def test_a_rate_limited_start_leaves_the_plant_untouched() -> None:
         assert plant.snapshot().physical_scenario.value == "door_open"
 
 
-# --------------------------------------------------------------------------- headers, previews
+# --------------------------------------------------------------------------- headers, production
 
 
 def test_security_headers(client: TestClient) -> None:
@@ -450,17 +450,13 @@ def test_templates_autoescape(client: TestClient) -> None:
     assert templates.env.autoescape is True or callable(templates.env.autoescape)
 
 
-def test_previews_hidden_in_production() -> None:
-    with make_client(enable_previews=False, production=True) as c:
-        assert c.get("/preview/").status_code == 404
-        assert c.get("/styleguide").status_code == 200
+def test_production_serves_the_pages_with_secure_cookies() -> None:
+    with make_client(production=True) as c:
         assert "Secure" in c.get("/").headers["set-cookie"]
+        assert c.get("/styleguide").status_code == 200
+        assert c.get("/preview/").status_code == 404
         assert c.get("/healthz").json() == {"status": "ok"}
-
-
-def test_settings_default_previews_off_in_production() -> None:
-    assert WebSettings.from_env({"COLDLINE_ENV": "production"}).enable_previews is False
-    assert WebSettings.from_env({}).enable_previews is True
+    assert WebSettings.from_env({"COLDLINE_ENV": "production"}).production
 
 
 # --------------------------------------------------------------------------- what the page shows after a decision

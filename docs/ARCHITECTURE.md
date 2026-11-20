@@ -131,6 +131,6 @@ and the HANDOVER guide lists what changes for a real deployment.
 ## Deployment
 
 One container (`Dockerfile`, Python 3.13 slim, uv) on Fly.io in Sydney, one `shared-cpu-1x` machine with
-512 MB, health check on `/healthz`. `COLDLINE_ENV=production` hides the fixture preview routes and marks
-cookies `Secure`; the client IP for rate limiting comes from the proxy's `Fly-Client-IP` header. The only
+512 MB, health check on `/healthz`. `COLDLINE_ENV=production` marks cookies `Secure`
+and turns on HSTS; the client IP for rate limiting comes from the proxy's `Fly-Client-IP` header. The only
 secret is `ANTHROPIC_API_KEY`, set as an environment variable on the host.

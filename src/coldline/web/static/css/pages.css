@@ -176,7 +176,7 @@
 }
 
 .ev-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
-.ev-table td { padding: 8px 0; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.ev-table td { padding: 8px 0; border-bottom: 1px solid var(--line-soft); vertical-align: top; overflow-wrap: anywhere; }
 .ev-table tr:last-child td { border-bottom: 0; }
 .ev-table td:first-child { width: 1%; white-space: nowrap; padding-right: var(--s-3); }
 .ev-table .t { color: var(--text-1); }
@@ -273,6 +273,8 @@
 .type-row { display: flex; gap: var(--s-4); align-items: baseline; border-bottom: 1px solid var(--line-soft); padding: 8px 0; }
 .type-row code { width: 90px; color: var(--text-3); font-size: 11px; flex: none; }
 .sg-demo { display: flex; flex-wrap: wrap; gap: var(--s-3); align-items: center; }
+.sg-samples a[aria-disabled="true"] { cursor: default; text-decoration: none; }
+.sg-samples .m-unit { cursor: default; pointer-events: none; }
 
 /* Live/replay budget note under the overview heading, and the approver role switch */
 .live-note { margin: 4px 0 0; color: var(--text-3); font-size: var(--fs-sm); max-width: 72ch; }

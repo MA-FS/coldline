@@ -47,7 +47,7 @@ def _dispatch(run):
     return next(a for a in run.approvals if a.action == "change_dispatch")
 
 
-# --------------------------------------------------------------------------- H1: superseded evidence
+# --------------------------------------------------------------------------- superseded evidence
 
 
 async def test_dispatch_proposal_expires_when_a_new_fault_supersedes_its_evidence() -> None:
@@ -108,7 +108,7 @@ def test_release_proposal_names_the_hold_it_releases() -> None:
     assert p.get_lot("L-2231").status == LotStatus.HOLD
 
 
-# --------------------------------------------------------------------------- H3: chained replays
+# --------------------------------------------------------------------------- chained replays
 
 
 async def test_chained_trip_binds_alarm_ids_to_the_current_plant() -> None:
@@ -174,7 +174,7 @@ async def test_repeated_trip_reuses_the_open_work_order_and_permit_draft() -> No
     assert f"[{agent_orders[0].id}]" in second.handover_note
 
 
-# --------------------------------------------------------------------------- M4: shared proposals
+# --------------------------------------------------------------------------- shared proposals
 
 
 async def test_one_decision_settles_every_run_that_proposed_it() -> None:
@@ -190,7 +190,7 @@ async def test_one_decision_settles_every_run_that_proposed_it() -> None:
     assert not again.executed and "Already approved" in again.message  # exactly once is preserved
 
 
-# --------------------------------------------------------------------------- M8: fallback keeps the ledger
+# --------------------------------------------------------------------------- fallback keeps the ledger
 
 
 async def test_live_failure_right_after_a_write_does_not_repeat_it() -> None:

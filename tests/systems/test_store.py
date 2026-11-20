@@ -140,8 +140,8 @@ def test_public_api_allowlist() -> None:
 
 
 def test_a_recently_used_sandbox_is_kept_and_the_newcomer_refused() -> None:
-    """The review's case: at capacity, a second address's arrival evicted the first visitor's sandbox. A
-    sandbox used within the protection window now stays; the new visitor is refused instead."""
+    """At capacity, a second address's arrival must not evict a visitor who is still active: a sandbox used
+    within the protection window stays, and the newcomer is refused instead."""
     wall = 0.0
     manager = SessionManager(3600, 1, protect_recent_s=600, clock=lambda: wall)
     first = manager.get("first", origin="203.0.113.7")

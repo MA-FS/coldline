@@ -44,8 +44,8 @@
 </div>
 {%- endmacro %}
 
-{#- Approval card. prefix keeps preview links inside /preview. -#}
-{% macro approval_card(a, compact=False, prefix="", now=None) -%}
+{#- Approval card. compact: the overview panel's short form. -#}
+{% macro approval_card(a, compact=False, now=None) -%}
 <article class="approval approval--{{ a.status }}{% if compact %} approval--compact{% endif %}" id="approval-{{ a.id }}">
   <div class="approval-head">
     <div class="approval-title">{{ a.title }}</div>
@@ -53,7 +53,7 @@
   </div>
   <div class="approval-meta">
     <span>{{ a.id }}</span><span>{{ a.action }}</span><span>tier APPROVE</span>
-    <a href="{{ prefix }}/runs/{{ a.run_id }}">{{ a.run_id }}</a>
+    <a href="/runs/{{ a.run_id }}">{{ a.run_id }}</a>
   </div>
   {#- What runs is stated by code before any button: the exact change (dispatch date and plant time), then any
       text the change would write verbatim, which the model wrote and is labelled so, then what code verified.
@@ -81,7 +81,7 @@
   <p class="approval-rationale">{{ a.rationale }}</p>
   {% endif %}
   {% if a.evidence_ids %}<div>{{ ui.ev_list(a.evidence_ids) }}</div>{% endif %}
-  {% if compact %}<a class="approval-more" href="{{ prefix }}/approvals#approval-{{ a.id }}">Full proposal: rationale, evidence and what it binds to</a>{% endif %}
+  {% if compact %}<a class="approval-more" href="/approvals#approval-{{ a.id }}">Full proposal: rationale, evidence and what it binds to</a>{% endif %}
   {% if not compact %}
   <div class="approval-payload">{% for k, v in a.payload.items() %}{{ k }}: {{ v }}
 {% endfor %}{% if a.source_versions %}<span style="color: var(--text-3)">binds to: {% for k, v in a.source_versions.items() %}{{ k }} v{{ v }}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}</div>
@@ -105,7 +105,7 @@
 {%- endmacro %}
 
 {#- Agent panel (overview right column). Regions: #agent-panel, #agent-steps, #agent-conclusion, #agent-approvals -#}
-{% macro agent_panel(run, approvals=[], prefix="", expired=[], role="") -%}
+{% macro agent_panel(run, approvals=[], expired=[], role="") -%}
 <section class="panel agent-panel{% if run and run.status != RunStatus.RUNNING %} agent-panel--done{% endif %}" id="agent-panel" aria-labelledby="agent-h"
   {% if run and run.status == RunStatus.RUNNING %}hx-ext="sse" sse-connect="/runs/{{ run.run_id }}/stream?view=panel&amp;after={{ run.steps|length }}" sse-close="done"{% endif %}>
   <header class="panel-head">
@@ -146,7 +146,7 @@
       </details>
       {% endif %}
       <div id="agent-conclusion" {% if running %}sse-swap="conclusion"{% endif %}>
-        {% if run.conclusion %}{{ conclusion(run.conclusion, run.confidence) }}{% endif %}
+        {% if run.conclusion %}{{ conclusion(run.conclusion, run_confidence(run)) }}{% endif %}
       </div>
       {% if not running and run.scenario == 'probe_mismatch' and run.confidence == 'unconfirmed' %}
         {% set waiting = approvals|selectattr('status', 'equalto', ApprovalStatus.PENDING)|selectattr('action', 'equalto', 'change_dispatch')|list %}
@@ -156,21 +156,21 @@
       <div id="agent-approvals" class="stack-sm">
         {% set pending = approvals|selectattr('status', 'equalto', ApprovalStatus.PENDING)|list %}
         {% if pending %}<div class="section-label">Needs your decision</div>
-          {% if role %}<p class="muted small" style="margin: 0">Deciding as <b class="strong">{{ role }}</b> · <a href="{{ prefix }}/approvals">switch role</a></p>{% endif %}
+          {% if role %}<p class="muted small" style="margin: 0">Deciding as <b class="strong">{{ role }}</b> · <a href="/approvals">switch role</a></p>{% endif %}
         {% endif %}
-        {% for a in pending %}{{ approval_card(a, compact=True, prefix=prefix) }}{% endfor %}
+        {% for a in pending %}{{ approval_card(a, compact=True) }}{% endfor %}
         {% set decided = approvals|rejectattr('status', 'equalto', ApprovalStatus.PENDING)|rejectattr('status', 'equalto', ApprovalStatus.EXPIRED)|list %}
         {% if decided %}<div class="section-label">Decided</div>{% endif %}
-        {% for a in decided %}{{ approval_card(a, compact=True, prefix=prefix) }}{% endfor %}
+        {% for a in decided %}{{ approval_card(a, compact=True) }}{% endfor %}
         {% if expired %}<div class="section-label">Expired: evidence changed</div>{% endif %}
-        {% for a in expired %}{{ approval_card(a, compact=True, prefix=prefix) }}{% endfor %}
+        {% for a in expired %}{{ approval_card(a, compact=True) }}{% endfor %}
       </div>
     {% endif %}
   </div>
   {% if run %}
   <footer class="panel-foot">
     <div class="agent-totals"><span><b>{{ run.steps|length }}</b> steps</span><span><b>{{ run.total_tokens|num }}</b> tok</span><span><b>{{ run.total_cost_usd|usd }}</b></span><span><b>{{ run.duration_ms|ms }}</b></span></div>
-    <a class="spacer right" href="{{ prefix }}/runs/{{ run.run_id }}">Open trace {{ run.run_id }} →</a>
+    <a class="spacer right" href="/runs/{{ run.run_id }}">Open trace {{ run.run_id }} →</a>
   </footer>
   {% endif %}
 </section>

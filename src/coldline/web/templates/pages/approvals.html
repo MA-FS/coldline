@@ -4,7 +4,6 @@
 {% import "components/ui.html" as ui %}
 {% import "components/agent.html" as ag %}
 {% block content %}
-{% set P = href_prefix or "" %}
 {% set every = all_approvals or approvals %}
 <div class="page-head">
   <div>
@@ -15,7 +14,7 @@
   <nav class="filters" aria-label="Filter approvals">
     {% for key, label in [('all', 'All'), ('pending', 'Pending'), ('approved', 'Approved'), ('declined', 'Declined'), ('expired', 'Expired')] %}
       {% set n = every|length if key == 'all' else every|selectattr('status', 'equalto', key)|list|length %}
-      <a href="{{ P }}/approvals{{ '' if key == 'all' else '?status=' ~ key }}"{% if (status_filter or 'all') == key %} aria-current="true"{% endif %}>{{ label }} <span class="n">{{ n }}</span></a>
+      <a href="/approvals{{ '' if key == 'all' else '?status=' ~ key }}"{% if (status_filter or 'all') == key %} aria-current="true"{% endif %}>{{ label }} <span class="n">{{ n }}</span></a>
     {% endfor %}
   </nav>
 </div>
@@ -31,7 +30,7 @@
 <section id="approvals" aria-label="Approval requests">
   {% if approvals %}
   <div class="approvals-grid">
-    {% for a in approvals %}{{ ag.approval_card(a, prefix=P) }}{% endfor %}
+    {% for a in approvals %}{{ ag.approval_card(a) }}{% endfor %}
   </div>
   {% else %}
   {{ ui.empty("Nothing waiting for you", "When the agent proposes a dispatch change, a work-order amendment or another APPROVE-tier action, it appears here.", "check-circle") }}

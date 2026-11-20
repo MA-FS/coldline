@@ -43,9 +43,8 @@ Everything is an environment variable with a safe default.
 | Variable | Default | Effect |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | unset | Enables live runs. The only secret. |
-| `COLDLINE_ENV` | unset | `production`: hides `/preview/*`, `Secure` cookies, HSTS. |
+| `COLDLINE_ENV` | unset | `production`: `Secure` cookies, HSTS. |
 | `COLDLINE_SECRET_KEY` | random per process | Signs session cookies. A stable key keeps a visitor's cookie valid across a restart, but sandboxes live in memory, so their state does not survive a restart or carry between processes. |
-| `COLDLINE_PREVIEWS` | on unless production | Fixture-backed page previews under `/preview/`. |
 | `COLDLINE_CLIENT_IP_HEADER` | unset | Header holding the client IP from a trusted proxy (`Fly-Client-IP` on Fly). Unset = socket peer. |
 | `COLDLINE_SESSION_TTL_S` / `COLDLINE_MAX_SESSIONS` / `COLDLINE_MAX_SESSIONS_PER_ORIGIN` | 7200 / 200 / 20 | Sandbox idle lifetime, capacity (least recently used evicted) and per-IP allowance. |
 | `COLDLINE_SESSION_PROTECT_S` | 600 | At capacity, a sandbox used this recently is kept and the newcomer refused. |

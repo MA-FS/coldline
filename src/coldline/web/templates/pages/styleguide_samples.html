@@ -1,0 +1,133 @@
+{#- The styleguide's sample region, rendered once per process (coldline.web.styleguide.Samples) from the
+    catalogue of replayed recordings. Each component instance goes through the `inert` filter
+    (coldline.web.inert): ids are scoped per instance, links do not navigate and nothing sends a request. -#}
+{% from "components/icons.html" import icon %}
+{% import "components/ui.html" as ui %}
+{% import "components/agent.html" as ag %}
+{% import "components/plant.html" as pl %}
+{% from "components/mimic.html" import plant_mimic %}
+<div class="sg-samples" hx-disable>
+<p class="muted small">Samples below are rendered from the bundled recordings, replayed in scratch sandboxes. They are not your plant, so their links and controls are switched off.</p>
+
+<section class="sg-section"><h2>Colour tokens <code>static/css/tokens.css</code></h2>
+  <div class="swatches">
+    {% for name in ['bg-0', 'bg-1', 'bg-2', 'bg-3', 'bg-inset', 'line', 'line-strong', 'text-1', 'text-2', 'text-3', 'text-4', 'proc', 'proc-dim', 'stale', 'amber', 'red', 'ok', 'accent'] %}
+      <div class="swatch"><div style="background: var(--{{ name }})"></div><p>--{{ name }}</p></div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="sg-section"><h2>Type</h2>
+  <div class="type-row"><code>3xl / 34</code><span class="kpi-value">6.8 °C</span></div>
+  <div class="type-row"><code>2xl / 26</code><h1>Plant Overview</h1></div>
+  <div class="type-row"><code>xl / 20</code><h2>Chiller 4 · Details</h2></div>
+  <div class="type-row"><code>md / 14</code><span>Body text for labels and descriptions.</span></div>
+  <div class="type-row"><code>sm / 12.5</code><span class="small muted">Secondary text, units, captions.</span></div>
+  <div class="type-row"><code>mono</code><span class="mono">get_sensor_trend(tags=["TT-401", "TT-402"]) · obs: TT-401 = 6.8 °C</span></div>
+</section>
+
+<section class="sg-section"><h2>Buttons <code>ui.button</code></h2>
+  {% filter inert("buttons") %}<div class="sg-demo">
+    {{ ui.button("Inject fault", "primary", "bolt") }}
+    {{ ui.button("Approve", "approve", "check") }}
+    {{ ui.button("Decline", "decline", "x") }}
+    {{ ui.button("Make reference probe stale", "outline", "eye-off") }}
+    {{ ui.button("Ghost", "ghost", "arrow-right") }}
+    {{ ui.button("Small", "", "", size="sm") }}
+    {{ ui.button("Disabled", "primary", "", disabled=True) }}
+    <div class="segmented" role="group"><button type="button" aria-pressed="true">{{ icon('replay', 'icon-sm') }}Replay</button><button type="button" aria-pressed="false">{{ icon('bolt', 'icon-sm') }}Live</button></div>
+  </div>{% endfilter %}
+</section>
+
+<section class="sg-section"><h2>Badges, chips, tiers <code>ui.badge · ui.prio · ui.tier · ui.ev_chip</code></h2>
+  <div class="sg-demo">
+    {{ ui.badge("Running", "running") }} {{ ui.badge("Awaiting approval", "attention") }} {{ ui.badge("Approved", "ok") }}
+    {{ ui.badge("Failed", "red") }} {{ ui.badge("Hold", "amber") }} {{ ui.badge("Expired", "muted") }} {{ ui.badge("Done") }}
+    {{ ui.mode_badge("replay") }} {{ ui.mode_badge("live") }}
+  </div>
+  <div class="sg-demo" style="margin-top: 12px">
+    {{ ui.prio("red") }} {{ ui.prio("amber") }} {{ ui.prio("low") }} {{ ui.prio("amber", False) }}
+    {{ ui.tier(Tier.READ) }} {{ ui.tier(Tier.AUTO) }} {{ ui.tier(Tier.APPROVE) }} {{ ui.tier(Tier.NEVER) }}
+  </div>
+  <div class="sg-demo" style="margin-top: 12px">
+    {% filter inert("chips") %}{% for rid in evidence_ids %}{{ ui.ev_chip(rid) }}{% endfor %}{% endfilter %}
+    {{ ui.tagval("TT-401", "6.8", tone="amber", direction="up") }} {{ ui.tagval("TT-402", "2.1", tone="stale") }} {{ ui.tagval("TT-101", "2.0") }}
+  </div>
+</section>
+
+<section class="sg-section"><h2>KPI tiles <code>ui.kpi</code></h2>
+  <div class="grid-auto">
+    {% for k in kpis %}{{ ui.kpi(k.label, k.value, unit=k.get('unit', ''), note=k.note, baseline=k.get('baseline', ''), kind=k.kind, spark=k.get('spark')) | inert("kpi-" ~ loop.index) }}{% endfor %}
+  </div>
+</section>
+
+<section class="sg-section"><h2>Plant mimic <code>plant_mimic(plant_view(snapshot))</code></h2>
+  <p class="muted small">States: probe mismatch (amber outline + badge), reference probe stale (grey italic + hatched STALE), compressor trip (red).</p>
+  <div class="grid-2">
+    <div class="panel"><div class="mimic-wrap">{{ plant_mimic(stale_plant) | inert("stale-mimic") }}</div></div>
+    <div class="panel"><div class="mimic-wrap">{{ plant_mimic(trip_plant, selected='') | inert("trip-mimic") }}</div></div>
+  </div>
+</section>
+
+<section class="sg-section"><h2>Trend charts <code>trend_svg(...)</code></h2>
+  <div class="grid-2">
+    <div class="panel"><div class="panel-body">{{ stale_chart | inert("stale-chart") }}<div class="legend" style="margin-top: 8px"><span><i class="amber"></i>abnormal</span><span><i></i>normal</span><span><i class="shade"></i>divergence</span><span><i class="stale"></i>stale</span><span><i class="event"></i>event</span></div></div></div>
+    <div class="panel"><div class="panel-body">{{ door_chart | inert("door-chart") }}</div></div>
+  </div>
+  <div class="sg-demo" style="margin-top: 12px">{{ sparkline_svg([2.0, 2.1, 2.05, 2.1, 2.2, 2.1, 2.0, 2.1]) }} {{ sparkline_svg([2.1, 2.4, 3.0, 3.9, 4.6, 5.5, 6.1, 6.8], tone="amber") }}</div>
+</section>
+
+<section class="sg-section"><h2>Chiller detail <code>pl.chiller_detail</code></h2>
+  {{ pl.chiller_detail(detail) | inert("detail") }}
+</section>
+
+<section class="sg-section"><h2>Agent step cards <code>ag.step_card</code></h2>
+  <div class="grid-2">
+    <ol class="steps">{% for s, meta in steps[:3] %}{{ ag.step_card(s, show_meta=meta) | inert("step-a" ~ loop.index) }}{% endfor %}</ol>
+    <ol class="steps">{% for s, meta in steps[3:] %}{{ ag.step_card(s, show_meta=meta) | inert("step-b" ~ loop.index) }}{% endfor %}{{ ag.step_card(running.steps[-1], running=True) | inert("step-running") }}</ol>
+  </div>
+</section>
+
+<section class="sg-section"><h2>Conclusion callouts <code>ag.conclusion</code></h2>
+  <div class="grid-2">
+    {% for text, confidence in conclusions %}{{ ag.conclusion(text, confidence) | inert("conclusion-" ~ loop.index) }}{% endfor %}
+  </div>
+</section>
+
+<section class="sg-section"><h2>Approval cards <code>ag.approval_card</code></h2>
+  <div class="approvals-grid">{% for a in approvals %}{{ ag.approval_card(a) | inert("approval-" ~ loop.index) }}{% endfor %}</div>
+  <div style="max-width: 440px; margin-top: 12px">{{ ag.approval_card(pending, compact=True) | inert("approval-compact") }}</div>
+</section>
+
+<section class="sg-section"><h2>Agent panel <code>ag.agent_panel</code></h2>
+  <div class="grid-2">
+    <div style="height: 560px">{{ ag.agent_panel(running, []) | inert("panel-running") }}</div>
+    <div style="height: 560px">{{ ag.agent_panel(None, []) | inert("panel-idle") }}</div>
+  </div>
+</section>
+
+<section class="sg-section"><h2>Data table + alarm strip <code>pl.alarm_table</code></h2>
+  {{ pl.alarm_table(alarms) | inert("alarms") }}
+</section>
+
+<section class="sg-section"><h2>Audit rows <code>pl.audit_row</code></h2>
+  <div class="panel"><ul class="audit">{% filter inert("audit") %}{% for e in events %}{{ pl.audit_row(e) }}{% endfor %}{% endfilter %}</ul></div>
+</section>
+
+<section class="sg-section"><h2>Tag / value list <code>ui.kv</code></h2>
+  <div class="panel" style="max-width: 420px"><div class="panel-body">{{ ui.kv([("Zone", "Carcase chillers"), ("Capacity", "120 carcases"), ("Status", "In service")]) }}</div></div>
+</section>
+
+<section class="sg-section"><h2>Empty, loading, toasts, notes</h2>
+  {% filter inert("states") %}<div class="grid-3">
+    {{ ui.empty("No active alarms", "No alarm condition is active.", "check-circle") }}
+    {{ ui.loading("Agent is working…") }}
+    <div class="stack-sm">
+      {{ ui.toast("QA hold placed on L-2231", "QH-0001 · audited", "ok", static=True) }}
+      {{ ui.toast("Approval expired", "TT-402 changed since AP-0002 was proposed", "amber", static=True) }}
+      {{ ui.toast("Live run limit reached", "Falling back to replay", "red", static=True) }}
+      {{ ui.note("Supplier email text is untrusted data and is shown delimited.", "mail", "note--untrusted") }}
+    </div>
+  </div>{% endfilter %}
+</section>
+</div>

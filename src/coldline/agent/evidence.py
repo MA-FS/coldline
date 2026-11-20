@@ -219,6 +219,17 @@ def _c(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.1f} °C"
 
 
+LIMIT_TEXT = f"{EXCURSION_LIMIT_C:.1f} °C"
+# Headlines with one fixed shape per chiller, as (one chiller, several chillers). When a run checks several
+# chillers with the same result, the conclusion names them in one sentence instead of repeating it.
+_SHAPES = {
+    Verdict.EXCURSION_CONFIRMED: (f"Confirmed excursion - both {{}} probes above {LIMIT_TEXT}.",
+                                  f"Confirmed excursion - both probes above {LIMIT_TEXT} in {{}}."),
+    Verdict.TRANSIENT_RECOVERED: ("Transient rise in {} - recovered, probes agree.",) * 2,
+    Verdict.PROBES_AGREE: ("{} probes agree and are within limits.",) * 2,
+}
+
+
 def _limit_verdict(name: str, probes: list[ProbeStatus]) -> dict:
     """Verdict, headline and recommendation for two fresh probes that agree, judged probe by probe.
 
@@ -233,13 +244,13 @@ def _limit_verdict(name: str, probes: list[ProbeStatus]) -> dict:
     - no probe above the limit: a transient if every probe that rose significantly has come back down,
       otherwise the probes agree and are within limits.
     """
-    limit = f"{EXCURSION_LIMIT_C:.1f} °C"
+    limit = LIMIT_TEXT
     above_now = [p for p in probes if p.latest_c is not None and p.latest_c > EXCURSION_LIMIT_C]
     crossed = [p for p in probes if p.peak_c is not None and p.peak_c > EXCURSION_LIMIT_C]
     hold = "Keep product on hold until QA has assessed the time above limit."
     if len(above_now) == len(probes):
         return {"verdict": Verdict.EXCURSION_CONFIRMED,
-                "headline": f"Confirmed excursion - both {name} probes above {limit}.",
+                "headline": _SHAPES[Verdict.EXCURSION_CONFIRMED][0].format(name),
                 "recommendation": hold}
     if len(crossed) == len(probes):
         if above_now:
@@ -269,9 +280,9 @@ def _limit_verdict(name: str, probes: list[ProbeStatus]) -> dict:
              and p.peak_c - p.start_c >= RISE_SIGNIFICANT_C]
     if risen and all(p.peak_c - (p.latest_c or 0.0) >= RECOVERY_MARGIN_C for p in risen):  # type: ignore[operator]
         return {"verdict": Verdict.TRANSIENT_RECOVERED,
-                "headline": f"Transient rise in {name} - recovered, probes agree.",
+                "headline": _SHAPES[Verdict.TRANSIENT_RECOVERED][0].format(name),
                 "recommendation": "No product action needed; keep monitoring."}
-    return {"verdict": Verdict.PROBES_AGREE, "headline": f"{name} probes agree and are within limits."}
+    return {"verdict": Verdict.PROBES_AGREE, "headline": _SHAPES[Verdict.PROBES_AGREE][0].format(name)}
 
 
 class GateResult(BaseModel):
@@ -332,8 +343,33 @@ def code_conclusion(assessments: list[Assessment], flagged: list[str] | tuple[st
     if worst is not None and worst.verdict in UNCERTAIN:
         parts.append(worst.headline)
     else:
-        parts += [a.headline for a in sorted(assessments, key=lambda a: _SEVERITY.index(a.verdict))]
+        parts += _headlines(sorted(assessments, key=lambda a: _SEVERITY.index(a.verdict)))
     return " ".join(dict.fromkeys(parts)) or NO_EVIDENCE_HEADLINE
+
+
+def _names(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _headlines(assessments: list[Assessment]) -> list[str]:
+    """Each check's headline in order, with chillers that share a fixed-shape headline named in one sentence
+    (at the place of the first of them)."""
+    out: list[str | Verdict] = []
+    shared: dict[Verdict, list[str]] = {}
+    for a in assessments:
+        shape = _SHAPES.get(a.verdict)
+        if shape is None or a.headline != shape[0].format(a.asset_name):
+            out.append(a.headline)
+            continue
+        if a.verdict not in shared:
+            out.append(a.verdict)
+        shared.setdefault(a.verdict, []).append(a.asset_name)
+    return [_shared_headline(x, shared[x]) if isinstance(x, Verdict) else x for x in out]
+
+
+def _shared_headline(verdict: Verdict, names: list[str]) -> str:
+    one, several = _SHAPES[verdict]
+    return one.format(names[0]) if len(names) == 1 else several.format(_names(names))
 
 
 def gate_conclusion(
@@ -362,18 +398,6 @@ def gate_conclusion(
         recommendations=[a.recommendation for a in assessments if a.verdict in UNCERTAIN and a.recommendation],
         assessments=assessments,
     )
-
-
-_CITATION = re.compile(r"\[([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\](?!\()")
-
-
-def extract_citations(markdown: str) -> list[str]:
-    """Record ids cited as ``[ID]`` (markdown links ``[text](url)`` are ignored)."""
-    seen: list[str] = []
-    for match in _CITATION.finditer(markdown):
-        if match.group(1) not in seen:
-            seen.append(match.group(1))
-    return seen
 
 
 # --------------------------------------------------------------------------- release clearance

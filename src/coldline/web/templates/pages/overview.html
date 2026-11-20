@@ -9,7 +9,6 @@
 {% import "components/plant.html" as pl %}
 {% from "components/mimic.html" import plant_mimic %}
 {% block content %}
-{% set P = href_prefix or "" %}
 {% set busy = run is not none and run.status == RunStatus.RUNNING %}
 {% set busy_title = "The agent is investigating; wait for it to finish (or reset the plant)" %}
 <div id="overview" data-rev="{{ rev|default('') }}">
@@ -54,13 +53,13 @@
   <div class="ov">
     <section class="panel ov-mimic" id="mimic" aria-label="Plant mimic" data-rev="{{ rev|default('') }}"
       {% if poll_url %}hx-get="{{ poll_url }}" hx-trigger="every 5s, plant-changed from:body" hx-select="#mimic" hx-swap="outerHTML" hx-select-oob="#clock,#nav-approvals-count,#mode-pill" hx-disinherit="*"{% endif %}>
-      <div class="mimic-wrap">{{ plant_mimic(plant, selected=detail.asset.id if detail else 'CH4', prefix=P) }}</div>
+      <div class="mimic-wrap">{{ plant_mimic(plant, selected=detail.asset.id if detail else 'CH4') }}</div>
       <p class="mimic-hint">{{ icon('arrow-right', 'icon-sm') }}Swipe sideways to see the whole plant</p>
     </section>
 
     <div class="ov-detail">{% if detail %}{{ pl.chiller_detail(detail) }}{% endif %}</div>
 
-    <div class="ov-agent">{{ ag.agent_panel(run, approvals, prefix=P, expired=expired|default([]), role=role|default("")) }}</div>
+    <div class="ov-agent">{{ ag.agent_panel(run, approvals, expired=expired|default([]), role=role|default("")) }}</div>
 
     <div class="ov-alarms">{{ pl.alarm_table(plant.alarms) }}</div>
   </div>

@@ -1,6 +1,5 @@
 {%- from "components/icons.html" import icon -%}
 {%- import "components/ui.html" as ui -%}
-{%- set P = href_prefix or "" -%}
 <!doctype html>
 <html lang="en" data-theme="dark">
 <head>
@@ -29,14 +28,14 @@
   <div class="disclaimer" role="note" id="disclaimer">{{ icon('info') }}<span>{{ DISCLAIMER }}</span></div>
 
   <header class="topbar">
-    <a class="brand" href="{{ P }}/" aria-label="ColdLine home">
+    <a class="brand" href="/" aria-label="ColdLine home">
       <span class="wordmark">{{ icon('logo', 'wordmark-mark') }}<span>Cold<b>Line</b></span></span>
       <span class="brand-sep" aria-hidden="true"></span>
       <span class="plant-id"><span class="plant-name">{{ PLANT_NAME }}</span><span class="plant-sub">BEEF PROCESSING PLANT</span></span>
     </a>
     <nav class="nav" aria-label="Main">
       {% for key, label, path in NAV %}
-        <a href="{{ P }}{{ path }}"{% if key == active_nav %} aria-current="page"{% endif %}>{{ label }}{% if key == 'approvals' %}{{ ui.nav_count(pending_approvals) }}{% endif %}</a>
+        <a href="{{ path }}"{% if key == active_nav %} aria-current="page"{% endif %}>{{ label }}{% if key == 'approvals' %}{{ ui.nav_count(pending_approvals) }}{% endif %}</a>
       {% endfor %}
     </nav>
     <div class="topbar-right">
@@ -55,7 +54,7 @@
 
   <footer class="footer">
     <span>{{ DISCLAIMER }}. “{{ PLANT_NAME }}” is fictional. No real plant data.</span>
-    <span>Reads OT, acts on IT, never writes to control. <a href="{{ P }}/how-it-works">How it works</a></span>
+    <span>Reads OT, acts on IT, never writes to control. <a href="/how-it-works">How it works</a></span>
   </footer>
 
   <div class="toasts" id="toasts" aria-live="polite">{% block toasts %}{% endblock %}</div>
