@@ -1,0 +1,34 @@
+[project]
+name = "coldline"
+version = "0.1.0"
+description = "ColdLine: an agentic shift engineer for a synthetic beef processing plant (independent portfolio demo, synthetic data)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "jinja2>=3.1",
+    "pydantic>=2.8",
+    "anthropic>=0.40",
+    "sse-starlette>=2.1",
+    "python-multipart>=0.0.9",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx>=0.27", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/coldline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["live: calls the real LLM API (skipped unless COLDLINE_LIVE_TESTS=1)"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
