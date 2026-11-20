@@ -13,6 +13,7 @@ from datetime import timedelta
 import pytest
 from agent_helpers import SUPERVISOR, call, context, investigate_ch4, plant, settings, turn
 
+from coldline.agent import handover
 from coldline.agent.approvals import Source, record_version
 from coldline.agent.model import ScriptedModelClient
 from coldline.agent.service import AgentService
@@ -142,8 +143,9 @@ async def test_fresh_replays_keep_the_recorded_wording() -> None:
     for scenario in (M, T, D, E):
         _, _, (run,) = await chain(scenario)
         assert "replay_divergence" not in run.extra, scenario
-        assert not run.handover_note.startswith("**Replay note:**"), scenario
-        assert run.extra["gate"]["removed"] == [], (scenario, run.extra["gate"]["removed"])
+        assert "**Replay note:**" not in run.handover_note and "**Agent's notes" in run.handover_note, scenario
+        # Only decision statements leave the recorded notes (the disposition says them from the records).
+        assert handover.contradictions(run.extra["gate"]["removed"]) == [], (scenario, run.extra["gate"])
 
 
 @pytest.mark.parametrize("steps", [(M, T, D, E, M), (E, M, "stale", T), (T, T, M, M), (D, M, E, "stale")])

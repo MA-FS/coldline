@@ -303,7 +303,11 @@ class Approval(BaseModel):
     decided_by: str | None = None
     decided_at: datetime | None = None
     idempotency_key: str
-    run_ids: list[str] = []  # every run that proposed this action on the same evidence (run_id first)
+    # Opaque and unique per proposal and per session generation: an approval card has to send it back, so a
+    # card from an expired or reset session can never decide a later proposal that reuses its display id.
+    decision_token: str = ""
+    run_ids: list[str] = []  # retained runs that proposed this action on the same evidence (run_id first)
+    run_count: int = 1  # every run that asked for it, including runs no longer retained
     note: str = ""  # why it expired or failed, for the person who tried to decide
 
 

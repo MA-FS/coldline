@@ -4,8 +4,8 @@
     service.active_run(session_id)                                  # admission: one run per session at a time
     run = await service.start_run(session_id, plant, mode="replay" | "live", origin=client_ip)
     async for event in service.stream_events(session_id, run.run_id): ...  # SSE: "step" events, then "done"
-    service.approve(session_id, approval_id, "Shift Supervisor", plant)
-    service.decline(session_id, approval_id, "Shift Supervisor", plant)
+    service.approve(session_id, approval_id, "Shift Supervisor", plant, token=card_token)
+    service.decline(session_id, approval_id, "Shift Supervisor", plant, token=card_token)
     service.list_runs(session_id); service.get_run(session_id, run_id); service.list_approvals(session_id)
     service.live_status(session_id)                                 # budget + whether live is available
 
@@ -254,19 +254,21 @@ class AgentService:
     def list_approvals(self, session_id: str, status: ApprovalStatus | None = None) -> list[Approval]:
         return list(reversed(self._session(session_id).approvals.list_all(status)))
 
-    def approve(self, session_id: str, approval_id: str, actor: str, systems: PlantSystems) -> ApprovalResult:
-        """Decide as ``actor``. An executed action can change other proposals' evidence, so the rest of the
-        session's pending approvals are re-checked straight away."""
+    def approve(self, session_id: str, approval_id: str, actor: str, systems: PlantSystems,
+                token: str | None = None) -> ApprovalResult:
+        """Decide as ``actor``. Web decisions pass the card's ``token``; one from an earlier session generation
+        raises :class:`~coldline.agent.approvals.StaleDecision`. An executed action can change other
+        proposals' evidence, so the rest of the session's pending approvals are re-checked straight away."""
         store = self._session(session_id).approvals
-        result = store.approve(approval_id, actor, systems)
+        result = store.approve(approval_id, actor, systems, token=token)
         if result.executed:
             store.revalidate(systems)
         self._refresh_statuses(session_id)
         return result
 
     def decline(self, session_id: str, approval_id: str, actor: str, systems: PlantSystems,
-                reason: str = "") -> ApprovalResult:
-        result = self._session(session_id).approvals.decline(approval_id, actor, systems, reason)
+                reason: str = "", token: str | None = None) -> ApprovalResult:
+        result = self._session(session_id).approvals.decline(approval_id, actor, systems, reason, token=token)
         self._refresh_statuses(session_id)
         return result
 

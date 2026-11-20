@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
+from coldline.agent.approvals import StaleDecision
 from coldline.contracts import Scenario
 from coldline.web import context as cx
 from coldline.web.render import templates
@@ -138,20 +139,18 @@ async def role(v: V, role: Annotated[str, Form()]) -> Response:
 # --------------------------------------------------------------------------- approvals
 
 
-def _decide(request: Request, v: Visitor, rt: Runtime, approval_id: str, approve: bool,
-            idempotency_key: str | None) -> HTMLResponse:
-    current = {a.id: a for a in rt.agent.list_approvals(v.sid)}
-    if approval_id not in current:
-        raise HTTPException(404, f"No approval {approval_id} in this session.")
-    if idempotency_key and idempotency_key != current[approval_id].idempotency_key:
-        raise HTTPException(409, "This decision was for a different proposal. Reload and try again.")
+def _decide(request: Request, v: Visitor, rt: Runtime, approval_id: str, approve: bool, token: str) -> Response:
+    """Approve or decline from a card. The card's decision token binds the click to the exact proposal in
+    this session generation: a card left open across a sandbox expiry or reset is refused with a toast,
+    even when a newer proposal now has the same display id."""
     try:
         if approve:
-            result = rt.agent.approve(v.sid, approval_id, v.prefs.role, v.plant)
+            result = rt.agent.approve(v.sid, approval_id, v.prefs.role, v.plant, token=token)
         else:
-            result = rt.agent.decline(v.sid, approval_id, v.prefs.role, v.plant)
-    except KeyError:
-        raise HTTPException(404, f"No approval {approval_id} in this session.") from None
+            result = rt.agent.decline(v.sid, approval_id, v.prefs.role, v.plant, token=token)
+    except StaleDecision as exc:
+        title = "Session expired: reload the page" if exc.session_expired else "Proposal changed: reload the page"
+        return Response(status_code=409, headers=toast(title, str(exc), "amber"))
     except PermissionError as exc:
         raise HTTPException(403, f"{exc}. Switch role on the Approvals page.") from None
     tone = "ok" if result.executed else ("neutral" if not approve else "amber")
@@ -165,10 +164,11 @@ def _decide(request: Request, v: Visitor, rt: Runtime, approval_id: str, approve
 
 @router.post("/approvals/{approval_id}/approve", response_class=HTMLResponse)
 async def approve(request: Request, approval_id: str, v: V, rt: RT,
-            idempotency_key: Annotated[str | None, Form()] = None) -> HTMLResponse:
-    return _decide(request, v, rt, approval_id, True, idempotency_key)
+                  decision_token: Annotated[str, Form()] = "") -> Response:
+    return _decide(request, v, rt, approval_id, True, decision_token)
 
 
 @router.post("/approvals/{approval_id}/decline", response_class=HTMLResponse)
-async def decline(request: Request, approval_id: str, v: V, rt: RT) -> HTMLResponse:
-    return _decide(request, v, rt, approval_id, False, None)
+async def decline(request: Request, approval_id: str, v: V, rt: RT,
+                  decision_token: Annotated[str, Form()] = "") -> Response:
+    return _decide(request, v, rt, approval_id, False, decision_token)

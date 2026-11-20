@@ -609,18 +609,14 @@ def write_handover_note(ctx: RunContext, args: HandoverIn) -> ToolResult:
         gate.conclusion = f"{gate.conclusion} {flagged}" if uncertain else flagged
         gate.rewritten = True
 
-    # The narrative: the model's draft minus unsupported sentences, or, when a replay meets a plant that
-    # differs from the recording, a notice instead of wording written for another plant.
+    # Disposition, holds, approvals and precautions are composed in code from the plant records; the
+    # model's draft only supplies the labelled notes (or, when a replay meets a plant that differs from the
+    # recording, a notice replaces notes written for another plant).
     facts = handover.facts(ctx, assessments)
     diffs: list[str] = []
     if ctx.replay_baseline is not None:
         diffs = handover.differences(facts, ctx.replay_baseline, ctx.unresolved)
-    removed: list[dict[str, str]] = []
-    if diffs:
-        narrative = handover.replay_notice(diffs)
-    else:
-        narrative, removed = handover.sanitize(args.note_markdown.strip(), handover.situation(ctx, assessments))
-    note = narrative + "\n\n" + handover.verified_block(ctx, gate, assessments, removed)
+    note, removed = handover.compose(ctx, gate, assessments, args.note_markdown, diffs)
 
     run = ctx.run
     run.conclusion, run.confidence, run.handover_note = gate.conclusion, gate.confidence, note
@@ -648,11 +644,19 @@ def write_handover_note(ctx: RunContext, args: HandoverIn) -> ToolResult:
         detail.append("Model wording was consistent with the evidence; headline set by code.")
     followups = [Followup(StepKind.GUARDRAIL, title, " ".join(detail), ok=True,
                           evidence_ids=[i for a in assessments for i in a.evidence_ids])]
-    if removed:
-        quoted = " | ".join(f"'{r['sentence'][:120]}' ({r['reason']})" for r in removed[:4])
+    unsupported = handover.contradictions(removed)
+    decisions = [r for r in removed if r not in unsupported]
+    if unsupported:
+        quoted = " | ".join(f"'{r['sentence'][:120]}' ({r['reason']})" for r in unsupported[:4])
         followups.append(Followup(StepKind.GUARDRAIL,
-                                  f"Handover check: {len(removed)} unsupported sentence(s) removed",
-                                  f"Removed from the draft before anyone reads or copies it: {quoted}"))
+                                  f"Handover check: {len(unsupported)} unsupported sentence(s) removed",
+                                  f"Removed from the agent's notes before anyone reads or copies them: {quoted}"))
+    if decisions:
+        quoted = " | ".join(f"'{r['sentence'][:120]}'" for r in decisions[:4])
+        followups.append(Followup(StepKind.GUARDRAIL,
+                                  f"Handover check: disposition set in code ({len(decisions)} sentence(s) moved)",
+                                  "Holds, shipping and approvals are stated from the plant records, not in the "
+                                  f"model's words. Moved out of the agent's notes: {quoted}", ok=True))
     if diffs:
         followups.append(Followup(StepKind.GUARDRAIL,
                                   "Replay check: plant differs from the recording - recorded wording not reused",

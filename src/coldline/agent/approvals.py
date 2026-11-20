@@ -10,7 +10,11 @@ turns it into an :class:`Approval` bound to:
   stay fresh. A release names the exact hold it releases. Every proposal also binds to the plant's
   incident generation, which moves on every fault injection and reset. Ordinary sampling noise moves none
   of these, so proposals expire only on a change a person would care about.
-* ``idempotency_key``: a stable hash of who proposed what, in which run.
+* ``idempotency_key``: a stable hash of who proposed what, in which run and session generation.
+* ``decision_token``: an opaque random token issued with the proposal. A decision from the web must carry
+  it. Display ids (AP-0001) restart for a visitor whose sandbox expired, so the id alone can name a newer
+  proposal; the token cannot. Each store has its own generation, which a token starts with, so a token from
+  an expired or reset session is recognised as such and refused with "session expired".
 
 ``approve()`` re-reads those values and re-checks the action's own preconditions (a new dispatch time must
 still be in the future) inside one sandbox transaction, then executes and audits under the same locks. If
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -61,6 +66,17 @@ class Proposal:
     evidence_ids: list[str]
     sources: list[Source]
     approver_roles: tuple[str, ...]
+
+
+class StaleDecision(Exception):
+    """A decision whose token does not belong to a current proposal in this session. Nothing is decided.
+
+    ``session_expired`` is true when the token was issued by an earlier generation of the session (its
+    sandbox expired, was evicted or was reset), so the page that sent it is out of date as a whole."""
+
+    def __init__(self, message: str, *, session_expired: bool) -> None:
+        super().__init__(message)
+        self.session_expired = session_expired
 
 
 class ApprovalResult(BaseModel):
@@ -173,6 +189,7 @@ class ApprovalStore:
 
     session_id: str
     next_id: Callable[[], str]
+    generation: str = field(default_factory=lambda: secrets.token_hex(6))  # new for every store
     _items: dict[str, Approval] = field(default_factory=dict)
     _meta: dict[str, _Meta] = field(default_factory=dict)
     _executed: set[str] = field(default_factory=set)
@@ -201,11 +218,12 @@ class ApprovalStore:
                     continue
                 if run_id not in existing.run_ids:
                     existing.run_ids.append(run_id)
+                    existing.run_count += 1
                 return existing, False
             versions = {s.record_id: record_version(systems, s) for s in proposal.sources}
             key_material = json.dumps(
-                {"session": self.session_id, "run": run_id, "action": proposal.action,
-                 "payload": proposal.payload},
+                {"session": self.session_id, "generation": self.generation, "run": run_id,
+                 "action": proposal.action, "payload": proposal.payload},
                 sort_keys=True,
                 default=str,
             )
@@ -220,15 +238,32 @@ class ApprovalStore:
                 evidence_ids=proposal.evidence_ids,
                 source_versions=versions,
                 idempotency_key=hashlib.sha256(key_material.encode()).hexdigest()[:24],
+                decision_token=f"{self.generation}.{secrets.token_urlsafe(12)}",
             )
             self._items[approval.id] = approval
             self._meta[approval.id] = _Meta(proposal.sources, proposal.approver_roles)
             self._audit(systems, approval, "agent", "approval_proposed", proposal.title)
             return approval, True
 
-    def approve(self, approval_id: str, actor: str, systems: PlantSystems) -> ApprovalResult:
+    def bound(self, approval_id: str, token: str) -> Approval:
+        """The approval ``token`` was issued for, if it is ``approval_id`` in this store; else StaleDecision."""
+        with self._lock:
+            approval = self._items.get(approval_id)
+            if approval is not None and token and secrets.compare_digest(approval.decision_token, token):
+                return approval
+        if token.split(".", 1)[0] != self.generation:
+            raise StaleDecision("This page is from an earlier session: the sandbox expired or the plant was "
+                                "reset. Nothing was decided. Reload the page to see the current proposals.",
+                                session_expired=True)
+        raise StaleDecision(f"This card does not match a current proposal {approval_id}. Nothing was decided. "
+                            "Reload the page.", session_expired=False)
+
+    def approve(self, approval_id: str, actor: str, systems: PlantSystems,
+                token: str | None = None) -> ApprovalResult:
+        """Decide as ``actor``. With ``token`` (every web decision) the token must be the one issued with this
+        proposal in this session generation (see :meth:`bound`)."""
         with self._lock, systems.transaction():
-            approval = self._items[approval_id]
+            approval = self._items[approval_id] if token is None else self.bound(approval_id, token)
             if approval.status == ApprovalStatus.APPROVED:
                 return ApprovalResult(approval=approval, executed=False,
                                       message="Already approved; not executed again.")
@@ -275,9 +310,10 @@ class ApprovalStore:
                     expired.append(approval)
         return expired
 
-    def decline(self, approval_id: str, actor: str, systems: PlantSystems, reason: str = "") -> ApprovalResult:
+    def decline(self, approval_id: str, actor: str, systems: PlantSystems, reason: str = "",
+                token: str | None = None) -> ApprovalResult:
         with self._lock, systems.transaction():
-            approval = self._items[approval_id]
+            approval = self._items[approval_id] if token is None else self.bound(approval_id, token)
             if approval.status != ApprovalStatus.PENDING:
                 return ApprovalResult(approval=approval, executed=False,
                                       message=f"Approval is {approval.status.value}; nothing changed.")
@@ -288,11 +324,15 @@ class ApprovalStore:
                                   message="Declined. No business system was changed.")
 
     def prune(self, keep_run_ids: set[str], keep_resolved: int = RESOLVED_KEEP) -> None:
-        """Drop decided approvals that no retained run references, beyond the newest ``keep_resolved``.
+        """Drop decided approvals that no retained run references, beyond the newest ``keep_resolved``, and
+        trim every approval's ``run_ids`` to retained runs (the originating run always stays; ``run_count``
+        keeps the total).
 
         Pending approvals are always kept: a person may still decide them.
         """
         with self._lock:
+            for a in self._items.values():
+                a.run_ids = [r for r in a.run_ids if r == a.run_id or r in keep_run_ids]
             resolved = [a for a in self._items.values() if a.status != ApprovalStatus.PENDING]
             orphans = [a for a in resolved if not set(a.run_ids or [a.run_id]) & keep_run_ids]
             for a in orphans[: max(0, len(orphans) - keep_resolved)]:

@@ -7,6 +7,7 @@ state-changing routes are in :mod:`coldline.web.routes_actions`.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Annotated
 
@@ -80,6 +81,17 @@ async def runs(request: Request, v: V, rt: RT) -> HTMLResponse:
 
 @router.get("/runs/{run_id}", response_class=HTMLResponse)
 async def run_detail(request: Request, run_id: str, v: V, rt: RT) -> HTMLResponse:
+    run = rt.agent.get_run(v.sid, run_id)
+    if run is None and request.headers.get("hx-request"):
+        # The page's own refresh after its stream ended with "missing" (a reset or expiry elsewhere): swap in
+        # a page saying so, so the stale trace does not stay on screen behind an error toast.
+        message = (f"{run_id} is no longer in this session: the plant was reset or the session expired, and its "
+                   "trace went with it.")
+        ctx = {**cx.shell(rt, v, "runs", "Run not available"), "status": "Run no longer available",
+               "message": message}
+        trigger = {"toast": {"title": f"{run_id} is no longer available", "text": message, "tone": "amber"}}
+        return templates.TemplateResponse(request, "pages/error.html", ctx,
+                                          headers={"HX-Trigger": json.dumps(trigger)})
     run = owned_run(rt, v, run_id)
     refs = cx.evidence_refs(v.plant, rt.agent, v.sid, cx.run_evidence_ids(run))
     ctx = {

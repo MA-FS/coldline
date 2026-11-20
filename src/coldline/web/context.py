@@ -120,8 +120,10 @@ def overview(rt: Runtime, v: Visitor) -> dict[str, Any]:
     run = latest_run(rt, v.sid)
     pv, detail = detail_context(v.plant, v.prefs.focus, run)
     every = rt.agent.list_approvals(v.sid)
-    # The panel shows this run's proposals; older ones stay on the Approvals page (and in the nav count).
-    approvals = [a for a in every if run is not None and a.run_id == run.run_id]
+    # The panel shows the proposals this run asked for, including pending ones an earlier run created on the
+    # same evidence and this run reused; others stay on the Approvals page (and in the nav count).
+    approvals = [a for a in every if run is not None and run.run_id in (a.run_ids or [a.run_id])]
+    approvals.sort(key=lambda a: (len(a.id), a.id))  # proposal order (AP-0001 first), as the stream adds them
     expired = [a for a in every if a.id in v.prefs.recent_expired and a.status == ApprovalStatus.EXPIRED]
     return {
         **shell(rt, v, "overview", "Plant overview"),
@@ -313,8 +315,14 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
     # Observed here: how long the visitor actually waited (replay playback or the live run's wall time) and
     # what live calls really cost. Replays also carry the source recording's own cost, shown separately.
     waits = [r.extra.get("wall_ms", 0) for r in runs if r.extra.get("wall_ms")]
-    live = [r for r in runs if r.extra.get("live_requested") or r.mode == "live"]
+    # A live run is one that called the model. A live request refused before any call (cap, limits, kill
+    # switch) ran as a replay and cost nothing. Calls whose outcome is unknown are not a confirmed zero:
+    # their reserved bound counts as unreconciled until checked against the provider's usage report.
+    live = [r for r in runs if r.extra.get("live_calls")]
+    refused_live = sum(1 for r in runs if r.extra.get("live_requested") and not r.extra.get("live_calls"))
+    live_calls = sum(r.extra.get("live_calls", 0) for r in live)
     live_spend = sum(r.extra.get("live_cost_usd", 0.0) for r in live)
+    unreconciled = sum(r.extra.get("unreconciled_usd", 0.0) for r in live)
     recorded_costs = [r.extra.get("recorded_cost_usd", 0.0) for r in runs if r.extra.get("recording")]
     authored = sum(1 for r in runs if r.extra.get("recording", {}).get("recorded") == "hand-authored")
     held = sorted({e.target for e in events if e.action == "place_qa_hold" and e.actor == "agent"})
@@ -361,8 +369,8 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
         {
             "label": "Live model spend",
             "value": f"${live_spend:.3f}" if live else "$0",
-            "note": (f"actual API cost of {len(live)} live run(s) this session" if live
-                     else "Replays cost nothing; switch to Live to measure real spend"),
+            "unit": f"+ ${unreconciled:.3f} unreconciled" if unreconciled else "",
+            "note": _live_note(len(live), live_calls, unreconciled, refused_live),
             "kind": "measured",
         },
         {
@@ -423,6 +431,20 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
         ),
     ]
     return {"kpis": kpis, "assumptions": assumptions}
+
+
+def _live_note(runs: int, calls: int, unreconciled: float, refused: int) -> str:
+    parts = []
+    if runs:
+        parts.append(f"confirmed API cost of {calls} model call(s) in {runs} live run(s) this session")
+    else:
+        parts.append("Replays cost nothing; switch to Live to measure real spend")
+    if unreconciled:
+        parts.append(f"US${unreconciled:.3f} more is unreconciled: calls whose outcome is unknown (a timeout or "
+                     "lost connection) count at their full reserved bound until checked against the provider")
+    if refused:
+        parts.append(f"{refused} live request(s) ran as replay before any model call and cost nothing")
+    return "; ".join(parts)
 
 
 def _seconds(ms: float) -> str:

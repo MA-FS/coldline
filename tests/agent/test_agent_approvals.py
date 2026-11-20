@@ -119,3 +119,41 @@ def test_release_proposal_needs_qa_manager() -> None:
         ctx.approvals.approve(release.id, SUPERVISOR, p)
     assert ctx.approvals.approve(release.id, "QA Manager", p).executed
     assert p.get_lot("L-2231").status.value == "ready"
+
+
+async def test_a_shared_proposal_keeps_references_only_to_retained_runs() -> None:
+    from agent_helpers import settings
+
+    from coldline.agent.service import MAX_RUNS_PER_SESSION, AgentService
+
+    svc = AgentService(settings())
+    p = plant(Scenario.PROBE_MISMATCH)
+    total = MAX_RUNS_PER_SESSION + 5
+    for _ in range(total):  # the same investigation again and again: every run reuses the same proposals
+        await svc.run_to_completion("s", p)
+    retained = {r.run_id for r in svc.list_runs("s")}
+    assert len(retained) == MAX_RUNS_PER_SESSION
+    for a in svc.list_approvals("s", ApprovalStatus.PENDING):
+        assert a.run_ids[0] == a.run_id == "R-7841" and a.run_id not in retained  # the origin is kept
+        assert set(a.run_ids[1:]) <= retained and len(a.run_ids) <= MAX_RUNS_PER_SESSION + 1
+        assert a.run_count == total
+
+
+def test_a_token_from_another_store_generation_is_a_stale_session() -> None:
+    from coldline.agent.approvals import StaleDecision
+
+    p = plant(Scenario.PROBE_MISMATCH)
+    first, second = context(p), context(p)
+    for ctx in (first, second):
+        investigate_ch4(ctx)
+        call(ctx, "propose_dispatch_change", lot_id="L-2231", new_due="07:00",
+             reason="Wait for a handheld reference reading.", evidence_ids=["L-2231", "TT-401"])
+    old, new = first.run.approvals[0], second.run.approvals[0]
+    assert old.id == new.id and old.payload == new.payload and old.decision_token != new.decision_token
+    with pytest.raises(StaleDecision) as exc:
+        second.approvals.approve(new.id, SUPERVISOR, p, token=old.decision_token)
+    assert exc.value.session_expired and new.status == ApprovalStatus.PENDING
+    with pytest.raises(StaleDecision) as exc:
+        second.approvals.decline(new.id, SUPERVISOR, p, token="")
+    assert exc.value.session_expired
+    assert second.approvals.approve(new.id, SUPERVISOR, p, token=new.decision_token).executed

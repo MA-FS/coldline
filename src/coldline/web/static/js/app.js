@@ -81,7 +81,21 @@
     clearTimeout(shellTimer);
     shellTimer = setTimeout(function () { htmx.ajax("GET", "/shell", { target: "#mode-pill", swap: "none" }); }, 150);
   }
-  document.body.addEventListener("plant-changed", refreshShell);
+  // A decision can change more than its own card: the next-step hint, the other cards, the dock, the filter
+  // counters and which cards a filtered list should show. Re-render the page region the card lives in.
+  var regionTimer = null;
+  function refreshRegion() {
+    if (!window.htmx) return;
+    clearTimeout(regionTimer);
+    regionTimer = setTimeout(function () {
+      if (document.getElementById("overview")) {
+        htmx.ajax("GET", "/", { target: "#overview", select: "#overview", swap: "outerHTML" });
+      } else if (document.getElementById("approvals") || document.getElementById("trace-steps")) {
+        htmx.ajax("GET", location.pathname + location.search, { target: "#main", select: "#main", swap: "outerHTML" });
+      }
+    }, 150);
+  }
+  document.body.addEventListener("plant-changed", function () { refreshShell(); refreshRegion(); });
   document.body.addEventListener("htmx:sseMessage", function (e) {
     var data = e.detail && e.detail.data;
     if (typeof data === "string" && data.indexOf("hx-swap-oob") >= 0) refreshShell();
@@ -105,7 +119,8 @@
   }
 
   // when a run finishes the server sends `done` and the stream closes (sse-close="done"):
-  // re-render the page region so totals, approvals, holds and the mimic show the final state
+  // re-render the page region so totals, approvals, holds and the mimic show the final state. A run that
+  // left the session (a reset or expiry in another tab) re-renders its page as "no longer available".
   document.body.addEventListener("htmx:sseClose", function (e) {
     if (!e.detail || e.detail.type !== "message" || !window.htmx) return;
     refreshShell();

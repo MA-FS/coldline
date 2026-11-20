@@ -26,7 +26,11 @@ A process that stops mid-call leaves its reservation in the ledger. The next pro
 (unreconciled), so a restart can never reset the cap or forget liability.
 
 The ledger is ``$COLDLINE_DATA_DIR/agent_spend.json``, replaced atomically (write, fsync, rename) on every
-change. When any limit is hit the run falls back to replay with a visible notice; nothing errors for the
+change. On start it is validated as a whole (:func:`parse_ledger`): the version and field set, a real date
+that is not in the future, and finite, non-negative amounts. The version-1 format (``day`` and
+``spent_usd`` only) is migrated. Anything else, even valid JSON such as ``{}``, is kept untouched on disk and
+paid mode stays off until an operator repairs it, because a ledger that might under-count is never trusted
+or overwritten. When any limit is hit the run falls back to replay with a visible notice; nothing errors for the
 visitor.
 """
 
@@ -34,7 +38,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import re
 import tempfile
 import threading
 import time
@@ -48,7 +54,10 @@ from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
 LEDGER_VERSION = 2
+LEDGER_FIELDS = frozenset({"version", "day", "spent_usd", "unreconciled_usd", "outstanding"})
+LEGACY_FIELDS = frozenset({"day", "spent_usd"})  # version 1, before reservations were journalled
 DAY_S = 86400.0
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 class BudgetExceeded(Exception):
@@ -59,6 +68,45 @@ class BudgetExceeded(Exception):
 class Reservation:
     id: int
     usd: float
+
+
+def _amount(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be a finite, non-negative number, not {value!r}")
+    return float(value)
+
+
+def parse_ledger(data: object, today: str) -> tuple[str, float, float, dict[str, float]]:
+    """Validate a ledger's contents: ``(day, spent, unreconciled, outstanding)``, or ValueError/TypeError.
+
+    Accepts the current format exactly, and the version-1 format (``{"day", "spent_usd"}``), which it
+    migrates with nothing unreconciled or outstanding."""
+    if not isinstance(data, dict):
+        raise TypeError("ledger is not a JSON object")
+    keys = set(data)
+    if "version" not in data and keys == LEGACY_FIELDS:
+        data = {**data, "version": LEDGER_VERSION, "unreconciled_usd": 0.0, "outstanding": {}}
+    elif data.get("version") != LEDGER_VERSION or isinstance(data.get("version"), bool) or keys != LEDGER_FIELDS:
+        raise ValueError(f"unsupported ledger format (version {data.get('version')!r}, fields {sorted(keys)})")
+    day = data["day"]
+    if not isinstance(day, str) or not _DAY.fullmatch(day):
+        raise ValueError(f"day must be YYYY-MM-DD, not {day!r}")
+    datetime.strptime(day, "%Y-%m-%d")  # a real calendar date
+    if day > today:
+        raise ValueError(f"ledger day {day} is after today ({today}): the clock or the file is wrong")
+    spent = _amount(data["spent_usd"], "spent_usd")
+    unreconciled = _amount(data["unreconciled_usd"], "unreconciled_usd")
+    if unreconciled > spent + 1e-9:
+        raise ValueError("unreconciled_usd is more than spent_usd (unreconciled spend is part of spend)")
+    raw = data["outstanding"]
+    if not isinstance(raw, dict):
+        raise TypeError("outstanding must be an object of reservation id -> amount")
+    outstanding = {}
+    for key, value in raw.items():
+        if not key.isdigit():
+            raise ValueError(f"outstanding reservation id {key!r} is not a number")
+        outstanding[key] = _amount(value, f"outstanding[{key}]")
+    return day, spent, unreconciled, outstanding
 
 
 class BudgetStatus(BaseModel):
@@ -112,6 +160,8 @@ class BudgetGuard:
         self._spent = 0.0
         self._unreconciled = 0.0
         self.ledger_error = ""
+        self.overrun = ""  # set when a call cost more than its reservation: the bound did not hold
+        self._keep_file = False  # an invalid ledger is evidence: never overwrite it
         self._load()
 
     # ------------------------------------------------------------------ persistence
@@ -126,24 +176,26 @@ class BudgetGuard:
             if not self._state_path.exists():
                 self._save()  # proves the directory is writable before any paid call
                 return
-            data = json.loads(self._state_path.read_text())
-            if not isinstance(data, dict):
-                raise TypeError("ledger is not a JSON object")
-            if data.get("day") == self._day:
-                outstanding = sum(float(v) for v in (data.get("outstanding") or {}).values())
-                self._spent = float(data.get("spent_usd", 0.0)) + outstanding
-                self._unreconciled = float(data.get("unreconciled_usd", 0.0)) + outstanding
-                if outstanding:
-                    log.warning("spend ledger: US$%.4f reserved by a previous process counted as spent "
-                                "(unreconciled)", outstanding)
-            self._save()
-        except (OSError, ValueError, TypeError) as exc:
+            day, spent, unreconciled, reserved = parse_ledger(json.loads(self._state_path.read_text()), self._day)
+        except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+            self._keep_file = True
             self._fail(f"could not read the spend ledger ({type(exc).__name__}: {exc})")
+            return
+        if day == self._day:  # an earlier day's spend (and its open reservations) belongs to that day's cap
+            outstanding = sum(reserved.values())
+            self._spent = spent + outstanding
+            self._unreconciled = unreconciled + outstanding
+            if outstanding:
+                log.warning("spend ledger: US$%.4f reserved by a previous process counted as spent "
+                            "(unreconciled)", outstanding)
+        self._save()
 
     def _save(self) -> bool:
         """Atomically replace the ledger. Returns False (and disables paid mode) if it cannot be written."""
         if not self._state_path:
             return True
+        if self._keep_file:
+            return False
         payload = {
             "version": LEDGER_VERSION,
             "day": self._day,
@@ -205,6 +257,8 @@ class BudgetGuard:
         now = self._clock()
         if self.ledger_error:
             return "Live runs are disabled: the spend ledger is unavailable. An operator has been alerted."
+        if self.overrun:
+            return "Live runs are disabled: a call cost more than its reserved bound. An operator has been alerted."
         if self._used(self._runs, session_id, now - self.window_s) >= self.session_runs_per_window:
             mins = int(self.window_s // 60)
             return f"Live-run limit reached for this session ({self.session_runs_per_window} per {mins} min)."
@@ -240,8 +294,8 @@ class BudgetGuard:
         """Reserve an upper bound for one call, journalled before the call is made."""
         with self._lock:
             self._roll_day()
-            if self.ledger_error:
-                raise BudgetExceeded("the spend ledger is unavailable")
+            if self.ledger_error or self.overrun:
+                raise BudgetExceeded(self.ledger_error and "the spend ledger is unavailable" or self.overrun)
             committed = self._spent + sum(self._reservations.values())
             if committed + usd > self.daily_cap_usd:
                 raise BudgetExceeded(
@@ -260,8 +314,12 @@ class BudgetGuard:
             self._reservations.pop(reservation.id, None)
             self._roll_day()
             self._spent += max(0.0, actual_usd)
-            if actual_usd > reservation.usd:
-                log.warning("call cost US$%.4f exceeded its reservation US$%.4f", actual_usd, reservation.usd)
+            if actual_usd > reservation.usd + 1e-9:
+                # The upper bound did not hold (a model billed above the supported ceiling, or a token count
+                # above the byte bound). Fail closed: the cap is only a promise while every bound holds.
+                self.overrun = (f"a call cost US${actual_usd:.4f}, more than its reserved bound "
+                                f"US${reservation.usd:.4f}")
+                log.error("live runs disabled: %s", self.overrun)
             self._save()
 
     def retain(self, reservation: Reservation) -> None:

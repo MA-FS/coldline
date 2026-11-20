@@ -32,7 +32,18 @@ jobs:
     concurrency: deploy
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1
-      - run: flyctl deploy --remote-only --ha=false
+      # flyctl receives the deploy credential, so it is a reviewed release checked against its published
+      # SHA-256 (from flyctl_<version>_checksums.txt), never "latest". To update: pick a release, compare its
+      # checksum file with the downloaded archive, then change both values together.
+      - name: Install flyctl (pinned, checksum verified)
+        env:
+          FLYCTL_VERSION: "0.5.5"
+          FLYCTL_SHA256: 2c64e1c7f320fafed0452fbce9adff57fcaf733619f0faa315ae883ec03d7ef6
+        run: |
+          curl -fsSL -o flyctl.tgz "https://github.com/superfly/flyctl/releases/download/v${FLYCTL_VERSION}/flyctl_${FLYCTL_VERSION}_Linux_x86_64.tar.gz"
+          echo "${FLYCTL_SHA256}  flyctl.tgz" | sha256sum --check --strict -
+          mkdir -p "$RUNNER_TEMP/flyctl" && tar -xzf flyctl.tgz -C "$RUNNER_TEMP/flyctl" flyctl && rm flyctl.tgz
+          echo "$RUNNER_TEMP/flyctl" >> "$GITHUB_PATH"
+      - run: flyctl version && flyctl deploy --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

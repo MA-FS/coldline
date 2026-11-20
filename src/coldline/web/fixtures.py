@@ -365,26 +365,24 @@ def _step(
     )
 
 
-HERO_HANDOVER = """## Chiller 4: probe mismatch, 05:42
+HERO_HANDOVER = """**Disposition (set in code from the plant records)**
+- Status: Probes disagree - cause unconfirmed. Confidence: unconfirmed.
+- [L-2231] (CH4, due 06:15): on QA hold [QH-0311]. Do not ship or load it until QA releases the hold; only QA can release a hold.
+- Waiting for a person's decision: [A-0091] Move L-2231 dispatch 06:15 → 07:00 (Shift Supervisor); [A-0092] Add evidence note to WO-1042 (Shift Supervisor or Maintenance Planner). Nothing changes until someone approves.
+- Required follow-up: Take a handheld reference reading in Chiller 4 and loop-check TT-401 before releasing product.
 
-**Status: cause unconfirmed.** Product is on hold until a reference reading settles it.
+**Agent's notes (written by the model; the lines set in code above take precedence)**
 
-- Primary probe TT-401 reads 6.8 °C and has risen steadily since about 05:00 [TT-401].
-- Independent probe TT-402 has held 2.1 °C (±0.1) over the same hour [TT-402].
+**What happened:** Primary probe TT-401 reads 6.8 °C and has risen steadily since about 05:00 [TT-401]. Independent probe TT-402 has held 2.1 °C (±0.1) over the same hour [TT-402].
+
 - The door opened at 05:40 for 68 s and closed again; TT-401 was already diverging before it [EV-0540].
-- Lot L-2231 (120 carcases, due 06:15) is in this chiller. The agent placed QA hold QH-0311 on it [L-2231] [QH-0311].
 - Work order WO-1042 from yesterday already reports TT-401 drifting against a handheld [WO-1042].
 
-### What the evidence does not show
+**What the evidence does not show:** whether the air is out of temperature: one probe says yes, the other says no. A cold-air short-circuit near TT-402 would look the same as a TT-401 drift.
 
-- It does not show the product is out of temperature: one probe says yes, the other says no.
-- It does not prove TT-401 is faulty. A cold-air short-circuit near TT-402 would look the same.
-
-### Needs a person
-
-1. Take a handheld reading next to TT-401 and at the carcase deep-muscle probe point.
-2. Approve or decline moving the L-2231 dispatch from 06:15 to 07:00 [A-0091].
-3. Approve or decline adding this event to WO-1042 [A-0092].
+**Checks computed in code (not by the model)**
+- Active alarms: [AL-0001] Probe mismatch - readings disagree (CH4, amber).
+- CH4: [TT-401] 6.8 °C (fresh) · [TT-402] 2.1 °C (fresh) · mean gap 2.5 °C over 15 min -> probes disagree
 """
 
 

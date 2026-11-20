@@ -1,134 +1,187 @@
-"""Handover integrity: the note a person reads, copies and acts on must agree with what code verified.
+"""Handover integrity: the note a person reads, copies and acts on cannot contradict what code enforces.
 
-``write_handover_note`` applies three layers to the model's draft:
+The note ``write_handover_note`` accepts has three sections, in this order:
 
-1. :func:`sanitize` removes sentences that contradict code-verified facts: a diagnosis while the evidence
-   is uncertain, release or dispatch advice while a lot in scope is held or the evidence is uncertain or
-   shows an excursion, a claim that the agent released or approved something (it cannot), and statements
-   about plant state that the run's own results contradict (an empty inbox, no active alarms, a held lot
-   "not held", nothing awaiting approval). Removed text is kept in the trace and the run record, never in
-   the note.
-2. :func:`facts` summarises, without record ids that change between sandboxes, what the run observed and
-   did. A replay compares it with the recording's summary. When they differ (say a lot was already on hold
-   from an earlier fault, or an email is waiting in the inbox), the recorded wording described a different
-   plant, so it is replaced by a note composed in code.
-3. :func:`verified_block` is composed in code from the run's own results: status, alarms, evidence checks,
-   holds, actions, proposals waiting, follow-ups and untrusted input. It is always appended, so the copied
-   note carries the authoritative facts whatever the narrative says.
+1. **Disposition** (:func:`disposition_block`), composed in code from the sandbox at handover time: the gated
+   conclusion and confidence, one line per lot the run looked at (on hold with the hold id and "do not ship
+   until QA releases it", or not on hold), the proposals waiting for a person, and the follow-ups the
+   evidence requires before any release. The model has no input into these lines, so a copied note can
+   never clear a held lot or drop a precaution the evidence calls for.
+2. **Agent's notes**, the model's own observations and narrative, clearly labelled as model-written.
+   :func:`sanitize` keeps out of it every sentence that states a product, hold or approval decision (those
+   belong to section 1) and every sentence the checks contradict: a cause while the evidence is uncertain,
+   a claim that something was released or approved, an empty inbox, no alarms or nothing pending when that
+   is false. What it leaves out is listed in the trace and ``run.extra["gate"]["removed"]``.
+3. **Checks computed in code** (:func:`verified_block`): alarms, the evidence check per chiller, work
+   orders and permit drafts, decided proposals, untrusted input, and what was left out of the notes.
+
+:func:`facts` summarises, without record ids that change between sandboxes, what the run observed and did.
+A replay compares it with the recording's summary (:func:`differences`); when they differ the recorded
+notes described another plant, so section 2 is replaced by a replay notice composed in code.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from coldline.agent.approvals import APPROVER_ROLES
-from coldline.agent.evidence import CAUSE_CLAIM, UNCERTAIN, Assessment, GateResult, Verdict
+from coldline.agent.evidence import CAUSE_CLAIM, CONFIDENCE_LEVELS, UNCERTAIN, Assessment, GateResult, Verdict
 from coldline.contracts import ApprovalStatus, InboxMessage, Lot, LotStatus, StepKind, Tier, WorkOrder
 
 if TYPE_CHECKING:
     from coldline.agent.context import RunContext
 
+CONFIDENCE_RANK = {c: i for i, c in enumerate(CONFIDENCE_LEVELS)}
+DISPOSITION_HEADING = "**Disposition (set in code from the plant records)**"
+NARRATIVE_HEADING = "**Agent's notes (written by the model; the lines set in code above take precedence)**"
 VERIFIED_HEADING = "**Checks computed in code (not by the model)**"
 
-# --------------------------------------------------------------------------- claims
+# --------------------------------------------------------------------------- the agent's notes
 
 
 @dataclass
 class Situation:
-    """What code knows at handover time, used to decide which claims a sentence may make."""
+    """What code knows at handover time, used to decide which statements the notes may make."""
 
     uncertain: bool = False  # the worst evidence verdict is uncertain
-    excursion: bool = False
-    held_lots: set[str] = field(default_factory=set)  # lots the run looked at that are on hold now
-    scope_lots: set[str] = field(default_factory=set)  # every lot the run looked at
     inbox_count: int = 0
     active_alarms: int = 0
     pending_approvals: int = 0
 
-    @property
-    def product_at_risk(self) -> bool:
-        return self.uncertain or self.excursion or bool(self.held_lots)
 
-
-_NEG = r"(?<!not )(?<!never )(?<!n't )"
-_RELEASE_ADVICE = [
-    re.compile(r"\b(can|could|may|should)\s+(now\s+)?(ship|be shipped|go out|leave site|be dispatched|dispatch"
-               r"|be released|be loaded|load)\b"),
-    re.compile(_NEG + r"\b(safe|ok|okay|fine|clear|cleared|good)\s+(to|for)\s+(ship|dispatch|release|load|go)"),
-    re.compile(_NEG + r"\bready\s+(to|for)\s+(ship|dispatch|shipping|release|load)"),
-    re.compile(r"\b(recommend\w*|should|please|go ahead and|can now|ok to|safe to)\b[^.;]{0,30}"
-               r"\b(release|lift|remove|clear)\s+(the\s+|all\s+|its\s+)?(qa\s+)?holds?\b"),
-    re.compile(r"\bno\s+(product\s+)?(action|hold|holds|delay)\s+(is\s+)?(needed|required)\b"),
-    re.compile(r"\bno\s+need\s+(for|to)\s+(a\s+|the\s+)?(hold|delay|check)"),
-    re.compile(r"\bship\s+\[?l-\d{4}"),
-    # an imperative: "Ship L-2231 at 06:15.", "Release the hold."
-    re.compile(r"^\W*(ship|dispatch|release|load)\s+(the\s+|all\s+)?(\[?l-\d{4}|lots?|loads?|product|it|holds?|qa)\b"),
-]
-_CLAIMED_HOLD = re.compile(r"\b(held|hold on|holds on)\b[^.;]{0,30}?\[?(l-\d{4})")
-_SELF_ACTION = re.compile(r"\b(released|approved|authori[sz]ed)\b")
-_NEGATED = re.compile(r"\b(no|not|never|none|nothing|cannot)\b|n't\b")
+# Product, hold and approval decisions are stated by section 1 only. The match is deliberately broad: a
+# false positive only moves a sentence out of the notes (it stays in the trace); a miss is still read below
+# the code-set disposition, which comes first and says what the records say.
+_DECISION = re.compile(
+    r"\bl-\d{4}\b|\blots?\b|\bap-\d{4}\b|\bqh-\d{4}\b|\bapprovals?\b|\bapproves?\b|\bdisposition\b"
+    r"|\bship\w*|\bdispatch\w*|\bdespatch\w*|\breleas\w*|\bunhold|\bholds?\b|\bheld\b|\bquarantin\w*"
+    r"|\bdeliver\w*|\bclear(?:ed|s)?\s+(?:to|for)\b|\bgo(?:es)?\s+out\b|\bleaves?\s+(?:the\s+)?site\b"
+    r"|\bgood\s+to\s+go\b|\b(?:ok|okay|safe|fine)\s+to\s+(?:sell|use|go|send)\b"
+    r"|\b(?:to|be|can|may|could|should|ok to|safe to)\s+(?:be\s+)?load(?:ed)?\b"
+    r"|\bload(?:ed|ing)?\s+(?:it|them|the\s+(?:lot|truck|trailer|product|carcases)|onto|out|now)\b"
+    r"|\bproduct\s+(?:is|are|was|looks|seems)\s+(?:fine|ok|okay|safe|good|unaffected|acceptable|in\s+spec"
+    r"|within\s+spec)\b"
+)
+# "I approved", "the change was approved", "approved by the agent" (not "an approved thermometer").
+_SELF_ACTION = re.compile(
+    r"\b(?:i|we|the agent|agent|coldline)\s+(?:have\s+|has\s+|had\s+|then\s+|also\s+)?"
+    r"(?:released|approved|authori[sz]ed|signed\s+off|executed)\b"
+    r"|\b(?:was|were|is|are|been|now|got)\s+(?:released|approved|authori[sz]ed|signed\s+off)\b"
+    r"|\b(?:released|approved|authori[sz]ed|signed\s+off)\s+by\s+(?:me|us|the agent|coldline)\b"
+    r"|\b(?:change|proposal|amendment|request|permit)\s+(?:approved|authori[sz]ed)\b"
+)
+_NEGATION = re.compile(r"\b(no|not|never|nothing|none|neither|nor)\b|n't\b")
 _INBOX_EMPTY = re.compile(r"\binbox\s+(is|was)\s+(empty|clear)\b|\bno\s+(new\s+)?(inbox\s+)?messages\b|\bempty inbox\b")
 _NO_ALARMS = re.compile(r"\bno\s+(active\s+)?alarms?\b")
-_NOT_HELD = re.compile(r"\b(l-\d{4})\b[^.;]{0,40}\b(is\s+not|isn't|not)\s+(held|on\s+hold)\b")
 _NOTHING_PENDING = re.compile(
     r"\b(awaiting|waiting for|pending)\s+approval\s*:?\**\s*(nothing|none)\b"
     r"|\b(nothing|none|no proposals?)\b[^.;]{0,20}\b(awaiting|waiting|pending)\b"
 )
+_RESERVED = re.compile(r"\b(set|computed|composed)\s+in\s+code\b|\bnot\s+by\s+the\s+model\b")
+
+DECISION_REASON = "a product, hold or approval decision, which the lines set in code state from the records"
 
 
 def unsupported(sentence: str, s: Situation) -> str:
-    """Why a sentence must not stand in the handover, or "" if it is consistent with the checks."""
+    """Why a sentence must not stand in the agent's notes, or "" if it may."""
     text = sentence.lower()
+    if _RESERVED.search(text):
+        return "imitates a section composed in code"
     if s.uncertain and CAUSE_CLAIM.search(text.replace("unconfirmed", "")):
         return "a cause the evidence does not confirm"
-    if s.product_at_risk and any(rx.search(text) for rx in _RELEASE_ADVICE):
-        return "release or dispatch advice while product is held or the evidence is uncertain"
-    if _SELF_ACTION.search(text) and not _NEGATED.search(text):
-        return "a claim that the agent did what only a person can do"
+    if any(not _NEGATION.search(text[max(0, m.start() - 30):m.start()]) for m in _SELF_ACTION.finditer(text)):
+        return "a claim that something was released or approved"
     if s.inbox_count and _INBOX_EMPTY.search(text):
         return "an empty inbox, but the inbox holds messages"
     if s.active_alarms and _NO_ALARMS.search(text):
         return "no alarms, but alarms are active"
-    for match in _NOT_HELD.finditer(text):
-        if match.group(1).upper() in s.held_lots:
-            return f"{match.group(1).upper()} not held, but it is on QA hold"
-    if not _NEGATED.search(text):
-        for match in _CLAIMED_HOLD.finditer(text):
-            lot = match.group(2).upper()
-            if lot in s.scope_lots and lot not in s.held_lots:
-                return f"{lot} held, but it is not on hold"
     if s.pending_approvals and _NOTHING_PENDING.search(text):
         return "nothing awaiting approval, but proposals are pending"
+    if _DECISION.search(text):
+        return DECISION_REASON
     return ""
+
+
+def contradictions(removed: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Left-out sentences that conflicted with the checks (the rest were decisions, stated in code)."""
+    return [r for r in removed if r["reason"] != DECISION_REASON]
 
 
 _LINE = re.compile(r"^(\s*(?:[-*]|\d+[.)])\s+)?(\*\*[^*]+\*\*:?\s*)?(.*)$")
 _SPLIT = re.compile(r"(?<=[.!?])\s+(?=[\[(*\"A-Z0-9])")
+_HEADING = re.compile(r"^\s*#{1,6}\s")
+
+
+def _label(text: str) -> str:
+    return text.strip().strip("*").strip().rstrip(":").strip()
 
 
 def sanitize(note: str, s: Situation) -> tuple[str, list[dict[str, str]]]:
-    """Remove unsupported sentences. Returns the cleaned note and what was removed, with reasons."""
+    """The model's draft without the statements it may not make. Returns the notes and what was left out.
+
+    Every part of a line is checked, including a bold lead such as ``**L-2231 can ship.**``; a lead that
+    is only a section label ("**What happened:**") stays while the section has content."""
     removed: list[dict[str, str]] = []
-    out: list[str] = []
+    out: list[tuple[str, bool, bool]] = []  # (line, only a section label, starts a section)
+
+    def check(sentence: str, context: str = "") -> bool:
+        reason = unsupported(f"{context} {sentence}".strip(), s)
+        if reason:
+            removed.append({"sentence": sentence.strip(), "reason": reason})
+        return not reason
+
+    skipping = ""  # reason, while inside a section whose label itself states a decision
     for raw in note.splitlines():
+        if not raw.strip():
+            out.append(("", False, False))
+            continue
         m = _LINE.match(raw)  # always matches: every group is optional or ".*"
         assert m is not None
         bullet, lead, body = m.group(1) or "", m.group(2) or "", m.group(3) or ""
-        kept = []
-        for sentence in _SPLIT.split(body) if body.strip() else []:
-            reason = unsupported(sentence, s)
-            if reason:
-                removed.append({"sentence": sentence.strip(), "reason": reason})
-            else:
-                kept.append(sentence)
-        if body.strip() and not kept:
-            if lead and not bullet:
-                out.append(lead.rstrip())  # keep a bold section label such as "**What happened:**"
+        label_like = bool(lead) and not bullet and (not body.strip() or lead.rstrip().endswith(":")
+                                                    or lead.rstrip().endswith(":**"))
+        if skipping and not (label_like or _HEADING.match(body)):
+            removed.append({"sentence": raw.strip(), "reason": skipping})
             continue
-        out.append(bullet + lead + " ".join(kept) if body.strip() else raw)
-    return "\n".join(out).strip(), removed
+        skipping = ""
+        if _HEADING.match(body) and not lead:
+            reason = unsupported(body.lstrip("# "), s)
+            if reason:  # "## Dispatch": the whole section is the code's to state
+                removed.append({"sentence": body.strip(), "reason": reason})
+                skipping = reason
+                continue
+        lead_ok = not lead or check(_label(lead))
+        if label_like and not lead_ok:
+            skipping = removed[-1]["reason"]  # "**Waiting for approval:**": its whole section goes
+            for sentence in _SPLIT.split(body) if body.strip() else []:
+                removed.append({"sentence": sentence.strip(), "reason": skipping})
+            continue
+        sentences = _SPLIT.split(body) if body.strip() else []
+        # The first sentence is read together with its lead: "**Awaiting approval:** nothing."
+        kept = [x for i, x in enumerate(sentences) if check(x, _label(lead) if i == 0 and lead_ok else "")]
+        starts = bool(lead and lead_ok and not bullet) or bool(_HEADING.match(body))
+        if kept:
+            out.append((bullet + (lead if lead_ok else "") + " ".join(kept), False, starts))
+        elif lead and lead_ok:
+            # A bold label with nothing (left) after it: a section label, kept while its section has content.
+            out.append((bullet + lead.rstrip(), not bullet, not bullet))
+    return _drop_empty_sections(out), removed
+
+
+def _drop_empty_sections(lines: list[tuple[str, bool, bool]]) -> str:
+    """Remove section labels and headings left with nothing under them, and repeated blank lines."""
+    kept: list[str] = []
+    for i, (line, label_only, _) in enumerate(lines):
+        if label_only or _HEADING.match(line):
+            nxt = next((j for j in range(i + 1, len(lines)) if lines[j][0].strip()), None)
+            if nxt is None or lines[nxt][2]:  # nothing follows, or the next section starts straight away
+                continue
+        if not line.strip() and (not kept or not kept[-1].strip()):
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
 
 
 # --------------------------------------------------------------------------- what the run saw and did
@@ -139,18 +192,8 @@ def scope_lots(ctx: RunContext) -> list[str]:
 
 
 def situation(ctx: RunContext, assessments: list[Assessment]) -> Situation:
-    held = set()
-    for lot_id in scope_lots(ctx):
-        try:
-            if ctx.systems.get_lot(lot_id).status == LotStatus.HOLD:
-                held.add(lot_id)
-        except KeyError:
-            continue
     return Situation(
         uncertain=any(a.verdict in UNCERTAIN for a in assessments),
-        excursion=any(a.verdict == Verdict.EXCURSION_CONFIRMED for a in assessments),
-        held_lots=held,
-        scope_lots=set(scope_lots(ctx)),
         inbox_count=len(ctx.systems.inbox()),
         active_alarms=len(ctx.systems.list_alarms(active_only=True)),
         pending_approvals=sum(1 for a in ctx.run.approvals if a.status == ApprovalStatus.PENDING),
@@ -187,44 +230,143 @@ _OUTCOME_TEXT = {
     ("approval", "reused"): "an identical proposal for {t} was already pending",
     ("approval", "new"): "a new proposal was needed for {t}",
 }
+_OUTCOME_NOUN = {"hold": "a QA hold on {t}", "wo_created": "a work order on {t}", "permit": "a permit draft for {t}",
+                 "approval": "a proposal for {t}"}
+
+
+def _verdict(v: str) -> str:
+    return v.replace("_", " ")
+
+
+def _lot_state(state: list | None) -> str:
+    if not state:
+        return "not looked up"
+    return f"{'on hold' if state[0] == 'hold' else state[0]}, due {state[1]}"
 
 
 def differences(current: dict[str, Any], recorded: dict[str, Any], unresolved: set[str]) -> list[str]:
-    """Readable clauses for how this plant differs from the recorded one (empty when they match)."""
+    """Readable clauses for how this plant differs from the recorded one; empty only when the two fact
+    maps are equal and every recorded reference was bound. Keys present on either side are compared, so a
+    fact the recording had and this run lacks counts as much as a new one."""
+    if current == recorded and not unresolved:
+        return []
     out = []
     if current.get("alarms") != recorded.get("alarms"):
         out.append("the active alarms differ")
-    for asset, verdict in current.get("verdicts", {}).items():
-        before = recorded.get("verdicts", {}).get(asset)
-        if before != verdict:
-            out.append(f"{asset}'s evidence check is '{verdict.replace('_', ' ')}'"
-                       + (f", recorded '{before.replace('_', ' ')}'" if before else ""))
-    def lot(state: list) -> str:
-        return f"{'on hold' if state[0] == 'hold' else state[0]}, due {state[1]}"
-
-    for lot_id, state in current.get("lots", {}).items():
-        before = recorded.get("lots", {}).get(lot_id)
-        if before != state:
-            out.append(f"{lot_id} was {lot(state)}" + (f" (recorded: {lot(before)})" if before else ""))
+    now_v, rec_v = current.get("verdicts", {}), recorded.get("verdicts", {})
+    for asset in sorted(set(now_v) | set(rec_v)):
+        now, before = now_v.get(asset), rec_v.get(asset)
+        if now == before:
+            continue
+        if now is None:
+            out.append(f"{asset} was not checked in this run (recorded '{_verdict(before)}')")
+        else:
+            out.append(f"{asset}'s evidence check is '{_verdict(now)}'"
+                       + (f", recorded '{_verdict(before)}'" if before else ""))
+    now_l, rec_l = current.get("lots", {}), recorded.get("lots", {})
+    for lot_id in sorted(set(now_l) | set(rec_l)):
+        now, before = now_l.get(lot_id), rec_l.get(lot_id)
+        if now == before:
+            continue
+        if now is None:
+            out.append(f"{lot_id} was not looked up in this run (recorded: {_lot_state(before)})")
+        else:
+            out.append(f"{lot_id} was {_lot_state(now)}" + (f" (recorded: {_lot_state(before)})" if before else ""))
     if current.get("work_orders") != recorded.get("work_orders"):
         out.append("the work orders differ")
     if current.get("inbox") != recorded.get("inbox"):
-        n = current.get("inbox", [0])[0]
-        out.append(f"the inbox held {n} message(s), recorded {recorded.get('inbox', [0])[0]}")
-    for key, value in current.get("outcomes", {}).items():
-        if recorded.get("outcomes", {}).get(key) != value:
-            out.append(_OUTCOME_TEXT.get((key.split(":")[0], value), "{t}: " + value).format(
-                t=key.split(":")[-1]))
-    if current.get("approvals") != recorded.get("approvals") and not any("approval" in c for c in out):
+        n = (current.get("inbox") or [0])[0]
+        out.append(f"the inbox held {n} message(s), recorded {(recorded.get('inbox') or [0])[0]}")
+    now_o, rec_o = current.get("outcomes", {}), recorded.get("outcomes", {})
+    for key in sorted(set(now_o) | set(rec_o)):
+        now, before = now_o.get(key), rec_o.get(key)
+        if now == before:
+            continue
+        kind, target = key.split(":")[0], key.split(":")[-1]
+        if now is None:
+            noun = _OUTCOME_NOUN.get(kind, "{t}").format(t=target)
+            out.append(f"the recorded run had {noun} and this run did not")
+        else:
+            out.append(_OUTCOME_TEXT.get((kind, now), "{t}: " + now).format(t=target))
+    if current.get("approvals") != recorded.get("approvals") and not any("proposal" in c for c in out):
         out.append("the proposals differ")
     if current.get("refused") != recorded.get("refused"):
         out.append("code refused a different set of steps")
     if unresolved:
         out.append("recorded references could not be bound to records in this plant")
+    if not out:  # a difference in a field without its own wording
+        out.append("the recorded facts differ from this run's")
     return list(dict.fromkeys(out))
 
 
-# --------------------------------------------------------------------------- the code-composed block
+# --------------------------------------------------------------------------- sections composed in code
+
+
+def _hm(lot: Lot) -> str:
+    return f"due {lot.dispatch_due:%H:%M}" if lot.dispatch_due else "no dispatch time"
+
+
+def lot_line(lot: Lot, hold_id: str | None, check: Assessment | None) -> str:
+    """One lot's disposition, from the lot record, its active hold and its chiller's evidence check."""
+    head = f"[{lot.id}] ({lot.zone_asset_id}, {_hm(lot)})"
+    if lot.status == LotStatus.DISPATCHED:
+        return f"{head}: already dispatched."
+    if hold_id:
+        return (f"{head}: on QA hold [{hold_id}]. Do not ship or load it until QA releases the hold; only QA "
+                "can release a hold.")
+    if check is not None and (check.verdict in UNCERTAIN or check.verdict == Verdict.EXCURSION_CONFIRMED):
+        return (f"{head}: not on hold, but the {check.asset_id} evidence check is '{_verdict(check.verdict)}'. "
+                "Nothing in this run supports shipping it; check with QA before loading.")
+    return f"{head}: not on hold."
+
+
+_CLAUSE = re.compile(r"\s*;\s*|(?<=[.!?])\s+")
+
+
+def headline(conclusion: str, s: Situation, assessments: list[Assessment]) -> tuple[str, list[dict[str, str]]]:
+    """The conclusion without clauses the notes could not carry either (it heads the code-set disposition
+    and the conclusion callout). Falls back to the code headline of the worst evidence check."""
+    removed, kept = [], []
+    for clause in (c for c in _CLAUSE.split(conclusion.strip()) if c.strip()):
+        reason = unsupported(clause, s)
+        if reason:
+            removed.append({"sentence": clause.strip(), "reason": reason})
+        else:
+            kept.append(clause.strip().rstrip(".;"))
+    if not removed:
+        return conclusion, []
+    if kept:
+        return "; ".join(kept) + ".", removed
+    worst = min(assessments, key=lambda a: CONFIDENCE_RANK[a.confidence_cap], default=None)
+    return (worst.headline if worst else "Investigation finished: see the checks below."), removed
+
+
+def required_followups(assessments: list[Assessment]) -> list[str]:
+    """Precautions the evidence itself requires (uncertain or excursion verdicts), in check order."""
+    needs = UNCERTAIN | {Verdict.EXCURSION_CONFIRMED}
+    return list(dict.fromkeys(a.recommendation for a in assessments if a.verdict in needs and a.recommendation))
+
+
+def disposition_block(ctx: RunContext, gate: GateResult, assessments: list[Assessment]) -> str:
+    checks = {a.asset_id: a for a in assessments}
+    lines = [f"- Status: {gate.conclusion} Confidence: {gate.confidence.replace('_', ' ')}."]
+    for lot_id in scope_lots(ctx):
+        try:
+            lot = ctx.systems.get_lot(lot_id)
+            hold = ctx.systems.active_hold(lot_id)
+        except KeyError:
+            continue
+        lines.append("- " + lot_line(lot, hold.id if hold else None, checks.get(lot.zone_asset_id)))
+    pending = [a for a in ctx.run.approvals if a.status == ApprovalStatus.PENDING]
+    if pending:
+        lines.append("- Waiting for a person's decision: " + "; ".join(
+            f"[{a.id}] {a.title} ({' or '.join(APPROVER_ROLES.get(a.action, ()))})" for a in pending)
+            + ". Nothing changes until someone approves.")
+    else:
+        lines.append("- Waiting for approval: nothing.")
+    for rec in required_followups(assessments):
+        lines.append(f"- Required follow-up: {rec}")
+    return DISPOSITION_HEADING + "\n" + "\n".join(lines)
 
 
 def _cited_summary(a: Assessment) -> str:
@@ -235,7 +377,7 @@ def _cited_summary(a: Assessment) -> str:
         parts.append(f"[{p.tag}] {value} ({state})")
     if a.mean_gap_c is not None:
         parts.append(f"mean gap {a.mean_gap_c:.1f} °C over 15 min")
-    return f"{' · '.join(parts)} -> {a.verdict.value.replace('_', ' ')}"
+    return f"{' · '.join(parts)} -> {_verdict(a.verdict)}"
 
 
 def untrusted_line(ctx: RunContext) -> str:
@@ -251,9 +393,8 @@ def untrusted_line(ctx: RunContext) -> str:
             "proposals were disabled for the rest of the run.")
 
 
-def verified_block(ctx: RunContext, gate: GateResult, assessments: list[Assessment],
-                   removed: list[dict[str, str]]) -> str:
-    lines = [f"- Status: {gate.conclusion} Confidence: {gate.confidence.replace('_', ' ')}."]
+def verified_block(ctx: RunContext, assessments: list[Assessment], removed: list[dict[str, str]]) -> str:
+    lines = []
     alarms = ctx.systems.list_alarms(active_only=True)
     if alarms:
         lines.append("- Active alarms: " + "; ".join(
@@ -262,17 +403,6 @@ def verified_block(ctx: RunContext, gate: GateResult, assessments: list[Assessme
         lines.append("- Active alarms: none.")
     for a in assessments:
         lines.append(f"- {a.asset_id}: {_cited_summary(a)}")
-    held, free = [], []
-    for lot_id in scope_lots(ctx):
-        try:
-            hold = ctx.systems.active_hold(lot_id)
-        except KeyError:
-            continue
-        (held if hold else free).append(f"[{lot_id}] ([{hold.id}])" if hold else f"[{lot_id}]")
-    if held:
-        lines.append(f"- On QA hold: {', '.join(held)}. Only QA can release a hold.")
-    if free:
-        lines.append(f"- Not on hold: {', '.join(free)}.")
     for key, label in (("wo_created", "Work order"), ("permit", "Permit draft")):
         for k, rid in sorted(ctx.created.items()):
             if k.startswith(key + ":"):
@@ -283,26 +413,38 @@ def verified_block(ctx: RunContext, gate: GateResult, assessments: list[Assessme
                 else:
                     suffix = " (already open; not duplicated)" if existing else ""
                 lines.append(f"- {label} for {k.split(':', 1)[1]}: [{rid}]{suffix}.")
-    pending = [a for a in ctx.run.approvals if a.status == ApprovalStatus.PENDING]
-    if pending:
-        lines.append("- Waiting for approval: " + "; ".join(
-            f"[{a.id}] {a.title} ({' or '.join(APPROVER_ROLES.get(a.action, ()))})" for a in pending) + ".")
-    else:
-        lines.append("- Waiting for approval: nothing.")
     for a in ctx.run.approvals:
         if a.status != ApprovalStatus.PENDING:
             lines.append(f"- [{a.id}] {a.title}: {a.status.value}.")
-    for rec in gate.recommendations:
-        lines.append(f"- Required follow-up: {rec}")
     if ctx.injection_flags:
         lines.append(f"- {untrusted_line(ctx)}")
     if removed:
         reasons = "; ".join(dict.fromkeys(r["reason"] for r in removed))
-        lines.append(f"- Removed from the model's draft: {len(removed)} unsupported sentence(s) ({reasons}).")
+        lines.append(f"- Left out of the agent's notes: {len(removed)} sentence(s) ({reasons}). They are in the "
+                     "run trace.")
     return VERIFIED_HEADING + "\n" + "\n".join(lines)
 
 
 def replay_notice(diffs: list[str]) -> str:
     return ("**Replay note:** this replay ran against a plant that differs from the recorded run ("
-            + "; ".join(diffs[:3]) + "), so the recorded wording is not reused. The handover below is "
+            + "; ".join(diffs[:3]) + "), so the recorded notes are not reused. Everything in this handover is "
             "composed in code from this run's own results.")
+
+
+def compose(ctx: RunContext, gate: GateResult, assessments: list[Assessment], draft: str,
+            diffs: list[str]) -> tuple[str, list[dict[str, str]]]:
+    """The accepted note: disposition, then the agent's notes (or the replay notice), then the checks.
+    The gate's conclusion loses any clause stating a decision or contradicting the checks, here, before the
+    run records it."""
+    s = situation(ctx, assessments)
+    gate.conclusion, removed = headline(gate.conclusion, s, assessments)
+    parts = [disposition_block(ctx, gate, assessments)]
+    if diffs:
+        parts.append(replay_notice(diffs))
+    else:
+        notes, left_out = sanitize(draft.strip(), s)
+        removed += left_out
+        if notes:
+            parts.append(NARRATIVE_HEADING + "\n\n" + notes)
+    parts.append(verified_block(ctx, assessments, removed))
+    return "\n\n".join(parts), removed

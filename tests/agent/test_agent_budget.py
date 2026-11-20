@@ -47,7 +47,7 @@ def test_reservations_cannot_overshoot_the_cap() -> None:
     with pytest.raises(BudgetExceeded):
         g.reserve(0.5)  # 0.6 reserved + 0.5 would pass 1.0 before anything is billed
     g.settle(r1, 0.02)  # the real cost is far below the worst case
-    r2 = g.reserve(0.5)
+    r2 = g.reserve(0.97)
     g.settle(r2, 0.97)
     assert "used up" in g.admit("s")
     status = g.status("s", live_enabled=True, api_key_present=True)
@@ -205,3 +205,108 @@ def test_ledger_write_failure_refuses_the_call(tmp_path, monkeypatch) -> None:
         g.reserve(0.01)
     assert "ledger" in g.admit("s")
     assert g.status("s", live_enabled=True, api_key_present=True).reserved_usd == 0
+
+
+# --------------------------------------------------------------------------- ledger schema (valid JSON, wrong content)
+
+TODAY = "2027-01-15"  # Clock()'s default time, UTC
+VALID = {"version": 2, "day": TODAY, "spent_usd": 0.5, "unreconciled_usd": 0.1, "outstanding": {"3": 0.2}}
+
+
+@pytest.mark.parametrize("content", [
+    "{}",
+    "[]",
+    '{"version": 2, "day": "2027-01-15", "spent_usd": 0.5, "unreconciled_usd": 0, "outstanding": [0.4]}',
+    '{"version": 2, "day": "2027-01-15", "spent_usd": 0.5, "unreconciled_usd": 0, "outstanding": "0.4"}',
+    json.dumps(VALID | {"spent_usd": -1}),
+    json.dumps(VALID | {"spent_usd": "0.5"}),
+    json.dumps(VALID | {"spent_usd": True}),
+    json.dumps(VALID).replace('"spent_usd": 0.5', '"spent_usd": NaN'),
+    json.dumps(VALID).replace('"spent_usd": 0.5', '"spent_usd": Infinity'),
+    json.dumps(VALID | {"unreconciled_usd": 0.9}),
+    json.dumps(VALID | {"outstanding": {"3": -0.2}}),
+    json.dumps(VALID | {"outstanding": {"x": 0.2}}),
+    json.dumps(VALID | {"day": "2027-02-30"}),
+    json.dumps(VALID | {"day": "15/01/2027"}),
+    json.dumps(VALID | {"day": "2027-01-16"}),  # tomorrow: the clock or the file is wrong
+    json.dumps(VALID | {"version": 3}),
+    json.dumps(VALID | {"extra": 1}),
+    json.dumps({k: v for k, v in VALID.items() if k != "unreconciled_usd"}),
+])
+def test_valid_json_with_invalid_content_keeps_paid_mode_off_and_the_file_intact(tmp_path, content) -> None:
+    path = tmp_path / "agent_spend.json"
+    path.write_text(content)
+    g = guard(Clock(), state_path=path)
+    status = g.status("s", live_enabled=True, api_key_present=True)
+    assert not status.live_available and not status.ledger_ok, content
+    with pytest.raises(BudgetExceeded):
+        g.reserve(0.01)
+    assert path.read_text() == content  # kept as evidence for the operator, never reset to zero
+
+
+def test_a_valid_ledger_loads_and_the_version_1_format_is_migrated(tmp_path) -> None:
+    path = tmp_path / "agent_spend.json"
+    path.write_text(json.dumps(VALID))
+    status = guard(Clock(), state_path=path).status("s", live_enabled=True, api_key_present=True)
+    assert status.ledger_ok and status.spent_today_usd == pytest.approx(0.7)  # 0.5 spent + 0.2 outstanding
+    assert status.unreconciled_usd == pytest.approx(0.3)
+    path.write_text(json.dumps({"day": TODAY, "spent_usd": 0.9}))
+    status = guard(Clock(), state_path=path).status("s", live_enabled=True, api_key_present=True)
+    assert status.ledger_ok and status.spent_today_usd == pytest.approx(0.9)
+    assert json.loads(path.read_text())["version"] == 2
+    path.write_text(json.dumps(VALID | {"day": "2027-01-14"}))  # yesterday's figures roll over
+    status = guard(Clock(), state_path=path).status("s", live_enabled=True, api_key_present=True)
+    assert status.ledger_ok and status.spent_today_usd == 0
+
+
+# --------------------------------------------------------------------------- an open fallback set (provider-chosen model)
+
+
+def test_a_reply_from_an_unlisted_fallback_model_settles_within_its_reservation() -> None:
+    from coldline.agent.loop import input_token_bound
+    from coldline.agent.pricing import PRICES, permitted_models, reservation_usd
+
+    bound = input_token_bound([], [{"role": "user", "content": "x" * 20_000}])
+    reserved = reservation_usd(permitted_models("claude-sonnet-5-5", server_fallback=True), bound, 3000)
+    unlisted = "claude-some-future-model"
+    assert unlisted not in PRICES and price_for(unlisted) == CONSERVATIVE
+    worst = cost_usd(unlisted, Usage(cache_creation_input_tokens=bound, output_tokens=3000))
+    assert worst <= reserved + 1e-9
+    # Near the cap: the reservation fits, and settling the unlisted model's real cost keeps spend under it.
+    g = guard(Clock(), daily_cap_usd=reserved + 0.01, min_call_reserve_usd=0.0)
+    g.settle(g.reserve(reserved), worst)
+    status = g.status("s", live_enabled=True, api_key_present=True)
+    assert status.spent_today_usd <= reserved + 0.01 and status.live_available
+
+
+def test_a_settlement_above_its_reservation_switches_live_runs_off() -> None:
+    g = guard(Clock(), daily_cap_usd=3.0, min_call_reserve_usd=0.0)
+    g.settle(g.reserve(0.10), 0.25)
+    assert "more than its reserved bound" in g.admit("s")
+    with pytest.raises(BudgetExceeded):
+        g.reserve(0.01)
+
+
+async def test_unknown_spend_is_shown_as_unreconciled_not_as_a_confirmed_zero() -> None:
+    from agent_helpers import plant, settings, turn
+
+    from coldline.agent.model import ScriptedModelClient
+    from coldline.agent.service import AgentService
+    from coldline.contracts import Scenario
+    from coldline.web.context import impact
+
+    budget = BudgetGuard(daily_cap_usd=3.0, session_runs_per_window=5, max_concurrent=2, min_call_reserve_usd=0.0)
+    turns = [turn("", error="model call timed out", error_billing_unknown=True)]
+    svc = AgentService(settings(), budget=budget, live_client_factory=lambda _: ScriptedModelClient(turns))
+    p = plant(Scenario.DOOR_OPEN)
+    lost = await svc.run_to_completion("s", p, mode="live")
+    assert lost.extra["live_calls"] == 1 and lost.extra["unreconciled_usd"] > 0
+    # A live request refused before any call (kill switch) ran as a replay and is not a live run.
+    off = AgentService(settings(live_enabled=False), budget=budget)
+    refused = await off.run_to_completion("s", plant(Scenario.DOOR_OPEN), mode="live")
+    assert refused.extra["live_requested"] and "live_calls" not in refused.extra
+    kpi = next(k for k in impact(p, svc, "s")["kpis"] if k["label"] == "Live model spend")
+    assert kpi["value"] == "$0.000" and kpi["unit"] == f"+ ${lost.extra['unreconciled_usd']:.3f} unreconciled"
+    assert "1 model call(s) in 1 live run(s)" in kpi["note"] and "unreconciled" in kpi["note"]
+    kpi_off = next(k for k in impact(p, off, "s")["kpis"] if k["label"] == "Live model spend")
+    assert kpi_off["value"] == "$0" and "1 live request(s) ran as replay before any model call" in kpi_off["note"]

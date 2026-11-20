@@ -17,10 +17,12 @@ Every safety rule is enforced in Python, in the tool registry and approval store
   all; requests for them are refused and audited. APPROVE-tier tools only create proposals.
 - The systems interface has **no write path to plant control**.
 - **Evidence checks** (freshness, probe divergence) are computed in code and cap the confidence the model may
-  claim. Citations must reference records a tool returned in this run. Handover sentences the checks
-  contradict are removed, and every handover ends with facts composed in code.
+  claim. Citations must reference records a tool returned in this run. The handover's disposition (holds,
+  shipping, proposals waiting, required follow-ups) is composed in code from the records; the model's prose
+  is a labelled section below it that may not state those decisions, and sentences the checks contradict
+  are removed.
 - **Approvals** bind to the evidence they relied on (record versions, probe quality, the evidence verdict,
-  the incident generation) and an idempotency key, re-check the action's precondition at decision time, and
+  the incident generation), an idempotency key and a per-session decision token, re-check the action's precondition at decision time, and
   expire when any of it changes.
 
 The prompt still explains the rules, so the model mostly behaves well and the trace reads naturally, but

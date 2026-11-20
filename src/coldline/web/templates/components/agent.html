@@ -60,15 +60,16 @@
   {% if not compact %}
   <div class="approval-payload">{% for k, v in a.payload.items() %}{{ k }}: {{ v }}
 {% endfor %}{% if a.source_versions %}<span style="color: var(--text-3)">binds to: {% for k, v in a.source_versions.items() %}{{ k }} v{{ v }}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}</div>
-  <details class="approval-tech"><summary>Technical details</summary>Idempotency key <code>{{ a.idempotency_key }}</code>: a repeated or retried decision on this proposal executes at most once.{% if a.run_ids|length > 1 %} Proposed by runs {{ a.run_ids|join(', ') }}.{% endif %}</details>
+  <details class="approval-tech"><summary>Technical details</summary>Idempotency key <code>{{ a.idempotency_key }}</code>: a repeated or retried decision on this proposal executes at most once. The buttons carry a decision token issued with this proposal, so a page left open across a session expiry or reset cannot decide a newer proposal with the same id.{% if a.run_count > 1 %} Asked for by {{ a.run_count }} runs on the same evidence{% if a.run_ids|length > 1 %} ({{ a.run_ids|join(', ') }}{% if a.run_count > a.run_ids|length %} and earlier ones{% endif %}){% endif %}.{% endif %}</details>
   {% endif %}
   {% if a.status == ApprovalStatus.PENDING %}
   <div class="approval-actions">
     <button class="btn btn--approve{% if compact %} btn--sm{% endif %}" type="button"
             hx-post="/approvals/{{ a.id }}/approve" hx-target="#approval-{{ a.id }}" hx-swap="outerHTML"
-            hx-vals='{"idempotency_key": "{{ a.idempotency_key }}"}'>{{ icon('check') }}<span>Approve</span><span class="spinner htmx-indicator"></span></button>
+            hx-vals='{"decision_token": "{{ a.decision_token }}"}'>{{ icon('check') }}<span>Approve</span><span class="spinner htmx-indicator"></span></button>
     <button class="btn btn--decline{% if compact %} btn--sm{% endif %}" type="button"
-            hx-post="/approvals/{{ a.id }}/decline" hx-target="#approval-{{ a.id }}" hx-swap="outerHTML">{{ icon('x') }}<span>Decline</span></button>
+            hx-post="/approvals/{{ a.id }}/decline" hx-target="#approval-{{ a.id }}" hx-swap="outerHTML"
+            hx-vals='{"decision_token": "{{ a.decision_token }}"}'>{{ icon('x') }}<span>Decline</span></button>
   </div>
   {% elif a.status == ApprovalStatus.EXPIRED %}
   <div class="approval-expired-note">{{ icon('clock') }}<span>Expired: {{ a.note or 'source data changed since this was proposed' }}. Nothing was executed.</span></div>
@@ -123,9 +124,9 @@
         {% if run.conclusion %}{{ conclusion(run.conclusion, run.confidence) }}{% endif %}
       </div>
       {% if not running and run.scenario == 'probe_mismatch' and run.confidence == 'unconfirmed' %}
-        {% set waiting = approvals|selectattr('status', 'equalto', ApprovalStatus.PENDING)|list %}
+        {% set waiting = approvals|selectattr('status', 'equalto', ApprovalStatus.PENDING)|selectattr('action', 'equalto', 'change_dispatch')|list %}
         <p class="agent-next" id="agent-next">{{ icon('arrow-right', 'icon-sm') }}<span><b class="strong">What to try next:</b>
-          {% if waiting %}approve the dispatch change as Shift Supervisor, then make the reference probe stale.{% else %}make the reference probe stale and watch the comparison get withdrawn.{% endif %}</span></p>
+          {% if waiting %}approve {{ waiting[0].id }} (the dispatch change) as Shift Supervisor, then make the reference probe stale.{% else %}make the reference probe stale and watch the comparison get withdrawn.{% endif %}</span></p>
       {% endif %}
       <div id="agent-approvals" class="stack-sm">
         {% set pending = approvals|selectattr('status', 'equalto', ApprovalStatus.PENDING)|list %}
@@ -133,6 +134,9 @@
           {% if role %}<p class="muted small" style="margin: 0">Deciding as <b class="strong">{{ role }}</b> · <a href="{{ prefix }}/approvals">switch role</a></p>{% endif %}
         {% endif %}
         {% for a in pending %}{{ approval_card(a, compact=True, prefix=prefix) }}{% endfor %}
+        {% set decided = approvals|rejectattr('status', 'equalto', ApprovalStatus.PENDING)|rejectattr('status', 'equalto', ApprovalStatus.EXPIRED)|list %}
+        {% if decided %}<div class="section-label">Decided</div>{% endif %}
+        {% for a in decided %}{{ approval_card(a, compact=True, prefix=prefix) }}{% endfor %}
         {% if expired %}<div class="section-label">Expired: evidence changed</div>{% endif %}
         {% for a in expired %}{{ approval_card(a, compact=True, prefix=prefix) }}{% endfor %}
       </div>

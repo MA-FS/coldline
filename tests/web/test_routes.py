@@ -48,6 +48,12 @@ def wait_for_run(c: TestClient) -> None:
     raise AssertionError("run did not finish")
 
 
+def decide(c: TestClient, approval, verb: str = "approve", token: str | None = None):
+    """Click a card's button: the card sends the decision token it was rendered with."""
+    data = {"decision_token": approval.decision_token if token is None else token}
+    return c.post(f"/approvals/{approval.id}/{verb}", data=data, headers=HX)
+
+
 def inject(c: TestClient, scenario: str = "probe_mismatch"):
     r = c.post("/session/inject", data={"scenario": scenario}, headers=HX)
     assert r.status_code == 200, r.text
@@ -89,7 +95,8 @@ def test_two_cookies_get_isolated_sandboxes() -> None:
             stream = b.get(f"/runs/{run_id}/stream")  # ends at once, revealing nothing
             assert "event: done" in stream.text and "data: missing" in stream.text and "event: step" not in stream.text
             approval = rt(a).agent.list_approvals(sid(a))[0]
-            assert b.post(f"/approvals/{approval.id}/approve", headers=HX).status_code == 404
+            assert decide(b, approval).status_code == 409  # a's card means nothing in b's session
+            assert approval.status == ApprovalStatus.PENDING
             assert "No runs yet" in b.get("/runs").text
             # Ids are numbered per visitor: b's first run and proposal carry the same ids as a's, separately.
             inject(b)
@@ -122,12 +129,12 @@ def test_inject_run_approve_then_stale_expires_and_changes_conclusion(client: Te
     assert "Needs your decision" in overview and "QA HOLD" in overview
 
     dispatch = next(a for a in run.approvals if a.action == "change_dispatch")
-    r = client.post(f"/approvals/{dispatch.id}/approve", data={"idempotency_key": dispatch.idempotency_key},
-                    headers=HX)
+    assert f'"decision_token": "{dispatch.decision_token}"' in overview  # the card carries its token
+    r = decide(client, dispatch)
     assert r.status_code == 200 and "Approved" in r.text and "plant-changed" in r.headers["hx-trigger"]
     lot = rt(client).sessions.get(s).get_lot("L-2231")
     assert lot.dispatch_due.isoformat() == dispatch.payload["new_due"]
-    again = client.post(f"/approvals/{dispatch.id}/approve", headers=HX)
+    again = decide(client, dispatch)
     assert "not executed again" in again.headers["hx-trigger"]
 
     r = client.post("/session/stale", data={"tag": "TT-402"}, headers=HX)
@@ -152,7 +159,7 @@ def test_first_visit_offers_the_hero_scenario_and_a_finished_run_folds_its_trace
     page = client.get("/").text
     assert '<details class="agent-trace">' in page and 'id="agent-steps"' in page
     assert page.index("agent-trace") < page.index('id="agent-conclusion"') < page.index("Needs your decision")
-    assert "What to try next:" in page and "approve the dispatch change as Shift Supervisor" in page
+    assert "What to try next:" in page and "approve AP-0001 (the dispatch change) as Shift Supervisor" in page
     assert "Run the hero scenario" not in page
 
 
@@ -164,7 +171,7 @@ def test_shell_fragment_refreshes_header_count_and_mode(client: TestClient) -> N
     shell = client.get("/shell", headers=HX).text
     assert 'aria-label="2 pending">2</span>' in shell
     approval = rt(client).agent.list_approvals(sid(client))[0]
-    r = client.post(f"/approvals/{approval.id}/decline", headers=HX)
+    r = decide(client, approval, "decline")
     assert "plant-changed" in r.headers["hx-trigger"]  # the page then refetches /shell
     assert 'aria-label="1 pending">1</span>' in client.get("/shell", headers=HX).text
     full = client.get("/approvals").text
@@ -208,7 +215,7 @@ def test_direct_navigation_always_gets_the_page_shell(client: TestClient) -> Non
 
 def test_unknown_ids_are_404(client: TestClient) -> None:
     client.get("/")
-    assert client.post("/approvals/AP-9999/approve", headers=HX).status_code == 404
+    assert client.post("/approvals/AP-9999/approve", headers=HX).status_code == 409  # no such card here
     assert client.get("/runs/R-0000").status_code == 404
     page = client.get("/runs/R-0000", headers={"Accept": "text/html"})
     assert page.status_code == 404 and DISCLAIMER in page.text
@@ -221,19 +228,56 @@ def test_wrong_role_is_403_and_role_switch_fixes_it(client: TestClient) -> None:
     inject(client)
     approval = rt(client).agent.list_approvals(sid(client))[0]
     assert client.post("/session/role", data={"role": "QA Manager"}, headers=HX).status_code == 204
-    r = client.post(f"/approvals/{approval.id}/approve", headers=HX)
+    r = decide(client, approval)
     assert r.status_code == 403 and "toast" in r.headers["hx-trigger"]
     assert client.post("/session/role", data={"role": "agent"}, headers=HX).status_code == 422
     client.post("/session/role", data={"role": "Shift Supervisor"}, headers=HX)
-    assert client.post(f"/approvals/{approval.id}/decline", headers=HX).status_code == 200
+    assert decide(client, approval, "decline").status_code == 200
 
 
-def test_mismatched_idempotency_key_is_409(client: TestClient) -> None:
+def test_a_decision_needs_the_token_its_card_was_issued_with(client: TestClient) -> None:
     client.get("/")
     inject(client)
     approval = rt(client).agent.list_approvals(sid(client))[0]
-    r = client.post(f"/approvals/{approval.id}/approve", data={"idempotency_key": "nope"}, headers=HX)
-    assert r.status_code == 409
+    other = rt(client).agent.list_approvals(sid(client))[1]
+    for verb in ("approve", "decline"):
+        for token in ("", "nope", other.decision_token):
+            r = decide(client, approval, verb, token)
+            assert r.status_code == 409 and "reload the page" in r.headers["hx-trigger"], (verb, token)
+    assert approval.status == other.status == ApprovalStatus.PENDING
+
+
+def _expire_sandbox(c: TestClient) -> None:
+    """Age the visitor's sandbox past the idle TTL; their next request (same signed cookie) gets a new one."""
+    rt(c).sessions._entries[sid(c)].touched -= rt(c).settings.session_ttl_s + 1
+
+
+@pytest.mark.parametrize("lifecycle", ["expiry", "reset"])
+def test_a_card_from_a_dead_sandbox_cannot_decide_its_replacement(client: TestClient, lifecycle: str) -> None:
+    """A tab kept open across a sandbox expiry (or a reset in another tab), then the hero run again: the new
+    proposal has the same display id and payload, and the old card must not decide it."""
+    client.get("/")
+    inject(client)
+    s = sid(client)
+    old = next(a for a in rt(client).agent.list_approvals(s) if a.action == "change_dispatch")
+    old_card = old.model_copy()  # what the stale tab still shows
+    if lifecycle == "expiry":
+        _expire_sandbox(client)
+        client.get("/")
+    else:
+        client.post("/session/reset", headers=HX)
+    inject(client)
+    new = next(a for a in rt(client).agent.list_approvals(s) if a.action == "change_dispatch")
+    if lifecycle == "expiry":
+        assert (new.id, new.payload, new.idempotency_key != old.idempotency_key) == (old.id, old.payload, True)
+    due = rt(client).sessions.get(s).get_lot("L-2231").dispatch_due
+    for verb in ("approve", "decline"):
+        r = decide(client, old_card, verb) if lifecycle == "expiry" else decide(client, new, verb, old.decision_token)
+        assert r.status_code == 409, (verb, r.text)
+        assert "Session expired: reload the page" in r.headers["hx-trigger"]
+    assert new.status == ApprovalStatus.PENDING
+    assert rt(client).sessions.get(s).get_lot("L-2231").dispatch_due == due
+    assert decide(client, new).status_code == 200 and new.status == ApprovalStatus.APPROVED
 
 
 # --------------------------------------------------------------------------- CSRF and rate limits
@@ -408,3 +452,57 @@ def test_previews_hidden_in_production() -> None:
 def test_settings_default_previews_off_in_production() -> None:
     assert WebSettings.from_env({"COLDLINE_ENV": "production"}).enable_previews is False
     assert WebSettings.from_env({}).enable_previews is True
+
+
+# --------------------------------------------------------------------------- what the page shows after a decision
+
+
+def _second_run_of_the_same_incident(c: TestClient) -> None:
+    s = sid(c)
+    c.portal.call(rt(c).agent.run_to_completion, s, rt(c).sessions.get(s))
+
+
+def test_the_overview_shows_proposals_the_latest_run_reused(client: TestClient) -> None:
+    client.get("/")
+    inject(client)
+    _second_run_of_the_same_incident(client)
+    s = sid(client)
+    latest, first = rt(client).agent.list_runs(s)[:2]
+    pending = rt(client).agent.list_approvals(s, ApprovalStatus.PENDING)
+    assert len(pending) == 2 and all(a.run_id == first.run_id and latest.run_id in a.run_ids for a in pending)
+    page = client.get("/").text
+    assert "Awaiting approval · 2 pending" in page
+    assert all(f'id="approval-{a.id}"' in page for a in pending)
+
+
+def test_after_approving_the_dispatch_the_hint_and_lists_follow_the_decision(client: TestClient) -> None:
+    client.get("/")
+    inject(client)
+    s = sid(client)
+    dispatch = next(a for a in rt(client).agent.list_approvals(s) if a.action == "change_dispatch")
+    page = client.get("/").text
+    assert f"approve {dispatch.id} (the dispatch change) as Shift Supervisor" in page
+    amend = next(a for a in rt(client).agent.list_approvals(s) if a.action == "amend_work_order")
+    # Cards are in proposal order, so the dispatch change the hint names is the first card in the panel.
+    assert dispatch.id == "AP-0001" and page.index(f'id="approval-{dispatch.id}"') < page.index(f'id="approval-{amend.id}"')
+    assert decide(client, dispatch).status_code == 200
+    page = client.get("/").text  # what the overview's refresh after "plant-changed" renders
+    assert "approve the dispatch change" not in page and "make the reference probe stale" in page
+    assert "Awaiting approval · 1 pending" in page and "Decided" in page
+    pending_tab = client.get("/approvals?status=pending").text
+    assert f'id="approval-{dispatch.id}"' not in pending_tab
+    assert 'aria-current="true">Pending <span class="n">1</span>' in pending_tab
+    assert 'Approved <span class="n">1</span>' in pending_tab
+
+
+def test_a_trace_page_whose_run_left_the_session_is_replaced_not_left_stale(client: TestClient) -> None:
+    client.get("/")
+    inject(client)
+    run_id = rt(client).agent.list_runs(sid(client))[0].run_id
+    client.post("/session/reset", headers=HX)
+    stream = client.get(f"/runs/{run_id}/stream?view=trace")
+    assert "data: missing" in stream.text  # the page closes its stream and re-renders itself
+    r = client.get(f"/runs/{run_id}", headers=HX)  # that re-render, as app.js requests it
+    assert r.status_code == 200 and 'id="main"' in r.text and "no longer in this session" in r.text
+    assert "is no longer available" in r.headers["hx-trigger"]
+    assert client.get(f"/runs/{run_id}").status_code == 404  # opened directly, it is still a 404

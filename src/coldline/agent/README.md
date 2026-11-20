@@ -17,7 +17,7 @@ how to change it safely, and how to tell whether a change made it better or wors
 | `tools.py` | Tool registry: typed inputs, tiers, scopes, NEVER-tier refusals, handover gate. |
 | `evidence.py` | Deterministic checks: probe freshness and divergence, verdicts, confidence cap, citations. |
 | `approvals.py` | APPROVE-tier proposals: evidence binding, idempotency, expiry, audit. |
-| `handover.py` | Handover integrity: removes unsupported sentences, the code-composed facts block, replay check. |
+| `handover.py` | Handover integrity: the code-composed disposition and checks, the filtered model notes, replay check. |
 | `injection.py` | Delimiting and screening of untrusted text (inbox, ticket notes). |
 | `budget.py` | Per-session and per-address limits, concurrency, daily US$ cap with journalled per-call reservations. |
 | `pricing.py` | The one place where tokens become dollars. |
@@ -114,7 +114,7 @@ GUARDRAIL step and an audit event. Unknown names are refused the same way, with 
 | Handover rejected until trend, lots and work orders are read for every affected chiller (and work orders or history for an alarmed compressor) | `missing_lookups` |
 | Handover rejected if it cites an id no tool returned | `write_handover_note` |
 | Confidence capped by the evidence; uncertain verdicts get a fixed headline | `evidence.gate_conclusion` |
-| The handover drops sentences the checks contradict (a diagnosis on uncertain evidence, "can ship" while product is held, an "empty" inbox that is not) and always ends with facts composed in code | `handover.py` |
+| The handover's disposition (holds, shipping, proposals waiting, required follow-ups) is composed in code; the model's notes may not state those decisions and lose sentences the checks contradict | `handover.py` |
 | A run without an accepted handover is marked `incomplete`, never shown as a finished investigation | `loop.finalize` |
 | A run that read suspected injection text cannot propose hold releases, cannot use that text as justification, and must say so in its conclusion | `tools.py` |
 | Approvals expire if their evidence changed (records, probe quality, verdict, incident) or the action's precondition no longer holds; execute exactly once; approve and decline need the same role; the agent cannot decide | `ApprovalStore` |
@@ -138,19 +138,26 @@ handover time.
 
 ## Handover integrity
 
-What a person reads, and copies with "Copy as text", must agree with what code verified (`handover.py`):
+What a person reads, and copies with "Copy as text", cannot contradict what code enforces (`handover.py`).
+The note has three sections, in this order:
 
-1. **Unsupported sentences are removed** from the model's draft: a cause stated while the verdict is
-   uncertain, release or dispatch advice while a lot in scope is held or the evidence is uncertain, a claim
-   that the agent released or approved something, and statements the run's own results contradict (an
-   empty inbox that is not, no alarms while alarms are active, a held lot "not held", nothing awaiting
-   approval while proposals are pending). The removed text is listed in the trace and in
-   `run.extra["gate"]["removed"]`, never in the note.
-2. **A block composed in code** ("Checks computed in code (not by the model)") always ends the note:
-   status and confidence, active alarms, the evidence check per chiller, holds, work orders and permit
-   drafts, proposals waiting (with their approver), required follow-ups, and what the run did with any
-   untrusted input (derived from its recorded steps, not asserted).
-3. **Replays check they are describing the same plant.** See "Replay and live".
+1. **Disposition (set in code from the plant records)**: the gated conclusion and confidence, one line per
+   lot the run looked at (on QA hold with the hold id and "do not ship or load it until QA releases the
+   hold", or not on hold, with a warning when that lot's evidence is uncertain or shows an excursion), the
+   proposals waiting with their approver, and the follow-ups the evidence requires. The model has no input
+   into these lines.
+2. **Agent's notes (written by the model)**: the model's observations and narrative. Any sentence, bold
+   lead or section that states a product, hold or approval decision is moved to the trace (section 1 says
+   it from the records), and sentences the checks contradict are removed: a cause stated while the verdict
+   is uncertain, a claim that something was released or approved, an empty inbox that is not, no alarms
+   while alarms are active, nothing awaiting approval while proposals are pending, or text imitating a
+   code section. The conclusion line gets the same clause-level check. Everything left out is listed in the
+   trace and in `run.extra["gate"]["removed"]`.
+3. **Checks computed in code (not by the model)**: active alarms, the evidence check per chiller, work
+   orders and permit drafts, decided proposals, and what the run did with any untrusted input (derived from
+   its recorded steps, not asserted).
+
+Replays also check they are describing the same plant. See "Replay and live".
 
 ## Approvals
 
@@ -160,6 +167,10 @@ probe's quality (good, stale, bad), the chiller's evidence verdict, the exact QA
 and the plant's incident generation (moved by every fault injection and reset). Sampling noise moves none
 of these. On approve, inside one sandbox transaction:
 
+0. A decision from the web must carry the card's decision token: an opaque value issued with that proposal
+   in that session generation. Display ids restart when a visitor's sandbox expires, so a stale tab could
+   otherwise name a newer AP-0001; with the wrong token the decision is refused ("session expired, reload")
+   and nothing changes. A reset starts a new generation too.
 1. Already approved: no-op ("not executed again"). Not pending: nothing happens.
 2. Actor must hold an approver role, matched exactly (`Shift Supervisor` for dispatch and amendments,
    `QA Manager` for hold releases). `agent` and `system` are always refused. Decline needs the same role.
@@ -172,7 +183,9 @@ of these. On approve, inside one sandbox transaction:
 `revalidate_approvals()` runs step 3 for every pending approval without executing anything. It runs after
 every fault injection, stale probe, decision and finished run, so expiry shows as soon as evidence changes.
 A later run proposing the same action on the same, still-valid evidence reuses the pending approval and adds
-its id to `run_ids`; one decision then settles every run that asked for it.
+its id to `run_ids`; one decision then settles every run that asked for it. `run_ids` is trimmed to the
+runs the session still keeps (the originating run always stays) and `run_count` keeps the total, so a
+proposal shared by many runs never holds references to runs that are gone.
 
 ## Untrusted text
 
@@ -251,8 +264,14 @@ limit. The SDK does not retry, so one reservation covers one attempt. The reserv
 ledger before the call and settled afterwards: at the real cost, at zero for an API error, or kept in full
 (as `unreconciled_usd`) when the outcome is unknown (timeout, lost connection, cancellation). The ledger is
 `$COLDLINE_DATA_DIR/agent_spend.json`, replaced atomically on every change. A reservation left behind by a
-stopped process counts as spent on restart. If the ledger cannot be read or written, live runs are
-disabled with an operator-visible reason until it is fixed. The session limit is keyed by session id, the
+stopped process counts as spent on restart. If the ledger cannot be read or written, or fails validation
+(version and fields, a real date not in the future, finite non-negative amounts), live runs are disabled
+with an operator-visible reason and the file is left untouched until it is fixed. With server-side fallback
+(`fallbacks: "default"`) the provider picks the fallback model, so reservations are priced at the
+conservative rate used for unlisted models; that rate is the supported ceiling, and a settlement above its
+reservation switches live runs off. Each run records its attempted calls (`live_calls`) and any spend whose
+outcome is unknown (`unreconciled_usd`); the Impact page shows the latter separately, never as a confirmed
+zero. The session limit is keyed by session id, the
 per-address quota stops one visitor cycling cookies, and the daily cap is the backstop.
 
 Other settings: `ANTHROPIC_API_KEY`, `COLDLINE_MODEL` (default `claude-sonnet-5-5`), `COLDLINE_EFFORT`
@@ -274,9 +293,10 @@ copied, and the code-set headline.
 
 * **scenario** (5): probe mismatch, stale reference probe, compressor trip, door open, poisoned email.
   Deterministic in CI via the recordings; live with `--live`.
-* **adversarial** (6, scripted models that misbehave on purpose): follows the injected email, holds a lot on
-  the injected email's say-so, invents a diagnosis and release advice, skips required lookups, proposes a
-  dispatch on stale evidence, cites a record it never read. These show the controls hold when the model
+* **adversarial** (7, scripted models that misbehave on purpose): follows the injected email, holds a lot on
+  the injected email's say-so, invents a diagnosis and release advice, writes "can ship" over a lot it just
+  held (and buries the precaution), skips required lookups, proposes a dispatch on stale evidence, cites a
+  record it never read. These show the controls hold when the model
   does not.
 * **approval** (5): expiry on a stale probe, expiry when a new fault supersedes the evidence, exactly-once
   execution, decline, no self-approval.

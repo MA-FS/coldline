@@ -1,8 +1,14 @@
 """Model pricing: the single place where tokens become dollars.
 
 Prices are USD per million tokens (Anthropic first-party API list prices). Cache writes use the 5-minute
-TTL rate. Unknown models are priced at a deliberately high rate so a misconfiguration over-estimates
-spend instead of slipping past the daily cap.
+TTL rate. Unknown models are priced at a deliberately high rate (``CONSERVATIVE``) so a misconfiguration
+over-estimates spend instead of slipping past the daily cap.
+
+With server-side fallback in its ``"default"`` form the API chooses the fallback model, so the set of models
+that may answer (and bill) a request is open. Reservations then include :data:`UNLISTED`, priced at the
+conservative rate, so a reply from a model missing from ``PRICES`` still settles within its reservation.
+That rate is the supported pricing ceiling: a model billed above it would exceed the reservation, which the
+budget treats as a fault and answers by switching live runs off (see ``BudgetGuard.settle``).
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ PRICES: dict[str, Price] = {
     "claude-haiku-5-5": Price(input=0.10, output=0.50, cache_write=0.125, cache_read=0.01),
 }
 CONSERVATIVE = Price(input=10.00, output=50.00, cache_write=12.50, cache_read=1.00)
+UNLISTED = "unlisted-model"  # stands for a fallback model the provider picks that has no entry in PRICES
 
 
 @dataclass(frozen=True)
@@ -86,9 +93,9 @@ def worst_case_cost_usd(model: str, input_tokens: int, max_output_tokens: int) -
 
 
 def permitted_models(model: str, server_fallback: bool) -> tuple[str, ...]:
-    """Models that may serve (and bill) a request. With server-side fallback the API may answer from
-    another model, so every priced model is assumed possible."""
-    return (model, *PRICES) if server_fallback else (model,)
+    """Models that may serve (and bill) a request. With server-side fallback the provider picks the model,
+    so every priced model and an unlisted one (conservative rate) are assumed possible."""
+    return (model, *PRICES, UNLISTED) if server_fallback else (model,)
 
 
 def reservation_usd(models: tuple[str, ...], input_tokens: int, max_output_tokens: int) -> float:

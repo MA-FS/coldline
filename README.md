@@ -45,7 +45,7 @@ released). Every run has a full trace with tool calls, guardrail decisions, toke
 |---|---|
 | An agent acting on business systems | A hand-written tool-use loop (no framework) over typed tools: historian, CMMS, QA/lots, dispatch, permits, inbox. |
 | Guardrails in code, not in the prompt | Every tool has a tier: **READ**, **AUTO** (low risk, audited), **APPROVE** (a person decides), **NEVER** (refused). There is no API that writes to plant control. |
-| Honest conclusions | Freshness and probe divergence are computed in Python; the model's confidence is capped by what the evidence supports, and handover sentences the checks contradict are removed before anyone reads or copies them. |
+| Honest conclusions | Freshness and probe divergence are computed in Python; the model's confidence is capped by what the evidence supports, and the handover's disposition (holds, shipping, approvals, required checks) is composed in code from the records, with the model's prose in a labelled section below it. |
 | Human approval on current evidence only | Proposals bind to the evidence they relied on (record versions, probe quality, the evidence verdict, the incident), execute exactly once, and expire if any of it changes before a person decides. |
 | Prompt injection | Inbox and ticket text is delimited as untrusted data, screened, and can never unlock a higher tier. |
 | Cost control | Replay is the default (recorded model decisions, run against the visitor's own plant). Live runs are opt-in, capped per session, per run and per day, and fall back to replay. |
@@ -97,9 +97,10 @@ uv run python -m evals.run            # writes the results shown on the Evals pa
 uv run python -m evals.run --live     # the scenario cases against the real model (costs a few cents)
 ```
 
-The eval suite has 16 cases: the five scenarios, six adversarial cases where a scripted model misbehaves
+The eval suite has 17 cases: the five scenarios, seven adversarial cases where a scripted model misbehaves
 on purpose (follows the injected email, holds a lot on the email's say-so, invents a diagnosis and release
-advice, skips lookups, proposes on stale evidence, cites a record it never read), and five approval cases
+advice, clears a held lot in its handover, skips lookups, proposes on stale evidence, cites a record it never
+read), and five approval cases
 (expiry on a stale probe, expiry when a new fault supersedes the evidence, exactly-once, decline, no
 self-approval). Each is scored on what happened in the business systems and the confidence reported; where
 the risk is the wording itself, the check reads the handover as rendered and copied.

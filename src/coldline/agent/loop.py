@@ -62,6 +62,13 @@ def _settle(budget: BudgetGuard | None, reservation: Reservation | None, actual_
         budget.settle(reservation, actual_usd)
 
 
+def _retain(ctx: RunContext, budget: BudgetGuard, reservation: Reservation) -> None:
+    """A call whose outcome is unknown: the budget keeps its full reservation, and the run records it as
+    unreconciled so its cost is never shown as a confirmed zero."""
+    budget.retain(reservation)
+    ctx.run.extra["unreconciled_usd"] = round(ctx.run.extra.get("unreconciled_usd", 0.0) + reservation.usd, 6)
+
+
 FRAMING_TOKENS = 512  # request framing and per-message markers, added to the byte count
 PER_MESSAGE_TOKENS = 16
 
@@ -108,6 +115,8 @@ async def run_loop(
             except BudgetExceeded as exc:
                 yield ctx.guardrail("Budget check: daily cost cap reached", str(exc))
                 raise LiveRunAborted("daily cost cap reached") from exc
+            # Counted per run: paid calls attempted, and spend whose outcome is unknown (see _retain).
+            ctx.run.extra["live_calls"] = ctx.run.extra.get("live_calls", 0) + 1
 
         timeout = min(remaining, limits.call_timeout_s)
         t0 = time.monotonic()
@@ -117,15 +126,17 @@ async def run_loop(
                               max_tokens=limits.max_tokens_per_call, timeout_s=timeout),
                 timeout=timeout + 2.0,
             )
-        except ScriptExhausted:
+        except ScriptExhausted:  # a scripted stand-in ran out of turns: no call was made
             _settle(budget, reservation, 0.0)
+            if reservation is not None:
+                ctx.run.extra["live_calls"] -= 1
             break
         except (ModelError, TimeoutError) as exc:
             # An API error response means nothing was generated. A timeout or lost connection may still
             # have been processed and billed, so its reservation is kept (and marked unreconciled).
             unknown = isinstance(exc, TimeoutError) or getattr(exc, "billing_unknown", False)
             if unknown and budget is not None and reservation is not None:
-                budget.retain(reservation)
+                _retain(ctx, budget, reservation)
             else:
                 _settle(budget, reservation, 0.0)
             reason = str(exc) or "model call timed out"
@@ -133,7 +144,7 @@ async def run_loop(
             raise LiveRunAborted(reason) from exc
         except asyncio.CancelledError:
             if budget is not None and reservation is not None:
-                budget.retain(reservation)
+                _retain(ctx, budget, reservation)
             raise
 
         measured_ms = int((time.monotonic() - t0) * 1000)
