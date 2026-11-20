@@ -473,6 +473,34 @@ def test_a_restart_after_midnight_keeps_yesterdays_open_reservation(tmp_path) ->
     assert status.spent_today_usd == pytest.approx(0.25) and status.unreconciled_usd == pytest.approx(0.25)
 
 
+def test_unreconciled_spend_from_an_earlier_day_is_carried_forward_dated(tmp_path) -> None:
+    """A call whose outcome is unknown (retained as unreconciled) keeps its record across the daily reset,
+    in a running process and after a restart. The cap resets; the amount is not rewritten as US$0.00."""
+    clock = Clock()
+    path = tmp_path / "agent_spend.json"
+    g = guard(clock, state_path=path)
+    g.retain(g.reserve(0.3))
+    g.close()  # restart the next day
+    clock.t += 86_400
+    g = guard(clock, state_path=path)
+    status = g.status("s", live_enabled=True, api_key_present=True)
+    assert status.spent_today_usd == 0 and status.unreconciled_usd == 0  # today's cap is fresh
+    assert status.carried_unreconciled == {TODAY: pytest.approx(0.3)}
+    assert json.loads(path.read_text())["carried_unreconciled"] == {TODAY: pytest.approx(0.3)}
+    g.close()
+    # the record survives further restarts and a further day, and keeps its original date
+    clock.t += 86_400
+    status = guard(clock, state_path=path).status("s", live_enabled=True, api_key_present=True)
+    assert status.carried_unreconciled == {TODAY: pytest.approx(0.3)}
+    # an uninterrupted process crossing midnight keeps it too
+    clock2, path2 = Clock(), tmp_path / "second.json"
+    g2 = guard(clock2, state_path=path2)
+    g2.retain(g2.reserve(0.2))
+    clock2.t += 86_400
+    status = g2.status("s", live_enabled=True, api_key_present=True)
+    assert status.spent_today_usd == 0 and status.carried_unreconciled == {TODAY: pytest.approx(0.2)}
+
+
 def test_a_reservation_open_at_midnight_settles_against_the_day_it_settles(tmp_path) -> None:
     """The uninterrupted process and the restarted one agree: an open liability counts on the day it
     resolves, and the journal keeps the day it was reserved for the operator."""
@@ -520,3 +548,95 @@ async def test_unknown_spend_is_shown_as_unreconciled_not_as_a_confirmed_zero() 
     assert "1 model call(s) in 1 live run(s)" in kpi["note"] and "unreconciled" in kpi["note"]
     kpi_off = next(k for k in impact(p, off, "s")["kpis"] if k["label"] == "Live model spend")
     assert kpi_off["value"] == "$0" and "1 live request(s) ran as replay before any model call" in kpi_off["note"]
+
+
+def _declined_then_answered(category: str | None, declined_output: int = 0, with_block: bool = True):
+    """The review's case: a primary that declined before any output (1,000 input tokens reported) and a
+    fallback that answered for US$0.003. The ``fallback`` block names the decline's category."""
+    declined = SimpleNamespace(type="message", model="claude-sonnet-5-5", input_tokens=1000,
+                               output_tokens=declined_output, cache_creation_input_tokens=0, cache_read_input_tokens=0)
+    answered = SimpleNamespace(type="fallback_message", model="claude-sonnet-5", input_tokens=1000, output_tokens=100,
+                               cache_creation_input_tokens=0, cache_read_input_tokens=0)
+    usage = SimpleNamespace(input_tokens=1000, output_tokens=100, cache_creation_input_tokens=0,
+                            cache_read_input_tokens=0, iterations=[declined, answered])
+    block = SimpleNamespace(type="fallback", trigger=SimpleNamespace(type="refusal", category=category))
+    tool = SimpleNamespace(type="tool_use", id="toolu_1", name="list_active_alarms", input={})
+    return SimpleNamespace(content=[block, tool] if with_block else [tool], usage=usage, model="claude-sonnet-5",
+                           stop_reason="tool_use", stop_details=None)
+
+
+PRIMARY = 1000 * 2.00 / 1e6  # the declined primary's reported usage, priced: US$0.002
+FALLBACK = (1000 * 2.00 + 100 * 10.00) / 1e6  # the answering fallback: US$0.003
+CHAIN = ("claude-sonnet-5-5", "claude-sonnet-5")
+
+
+@pytest.mark.parametrize(("category", "output", "block", "measured", "estimated"), [
+    ("cyber", 0, True, FALLBACK, PRIMARY),  # declined before output, category not billed: an estimate
+    (None, 0, True, FALLBACK, PRIMARY),  # null category: not billed either
+    ("cyber", 0, False, FALLBACK, PRIMARY),  # category unknown: never assumed billed or free
+    ("bio", 0, True, PRIMARY + FALLBACK, 0.0),  # a billed category: measured
+    ("cyber", 50, True, PRIMARY + 50 * 10.00 / 1e6 + FALLBACK, 0.0),  # declined mid-output: billed, measured
+], ids=["unbilled_category", "null_category", "unknown_category", "billed_category", "mid_output"])
+def test_only_usage_the_billing_rules_establish_is_measured(category, output, block, measured, estimated) -> None:
+    from coldline.agent.model import billed_usage
+    from coldline.agent.pricing import split_cost
+
+    response = _declined_then_answered(category, output, block)
+    usage = billed_usage(response.usage, response)
+    cost = split_cost("claude-sonnet-5", usage, CHAIN)
+    assert cost.measured == pytest.approx(measured) and cost.estimated == pytest.approx(estimated)
+    assert cost_usd("claude-sonnet-5", usage, CHAIN) == pytest.approx(measured + estimated)  # what the cap counts
+    assert Usage.from_dict(usage.as_dict()) == usage  # a recorded turn keeps the decline and its category
+
+
+def test_a_single_declined_attempt_without_iterations_is_an_estimate() -> None:
+    from coldline.agent.model import billed_usage
+    from coldline.agent.pricing import split_cost
+
+    usage = SimpleNamespace(input_tokens=1000, output_tokens=0, cache_creation_input_tokens=0,
+                            cache_read_input_tokens=0, iterations=None)
+    response = SimpleNamespace(content=[], usage=usage, model="claude-sonnet-5-5", stop_reason="refusal",
+                               stop_details=SimpleNamespace(type="refusal", category="cyber"))
+    cost = split_cost("claude-sonnet-5-5", billed_usage(usage, response), CHAIN)
+    assert (cost.measured, cost.estimated) == (0.0, pytest.approx(PRIMARY))
+
+
+async def test_an_unbilled_decline_is_reported_apart_from_measured_spend() -> None:
+    """End to end: the trace step and the Impact page show US$0.003 measured and US$0.002 estimated (it was
+    US$0.005 measured); the daily cap still counts both."""
+    from agent_helpers import plant, settings
+
+    from coldline.agent.model import AnthropicModelClient
+    from coldline.agent.service import AgentService
+    from coldline.contracts import Scenario
+    from coldline.web.context import impact
+
+    class FakeMessages:
+        calls = 0
+
+        async def create(self, **kwargs):
+            FakeMessages.calls += 1
+            if FakeMessages.calls == 1:
+                return _declined_then_answered("cyber")
+            usage = SimpleNamespace(input_tokens=0, output_tokens=0, cache_creation_input_tokens=0,
+                                    cache_read_input_tokens=0, iterations=None)
+            return SimpleNamespace(content=[], usage=usage, model="claude-sonnet-5", stop_reason="end_turn",
+                                   stop_details=None)
+
+    fake = SimpleNamespace(beta=SimpleNamespace(messages=FakeMessages()), messages=None)
+    budget = BudgetGuard(daily_cap_usd=5.0, session_runs_per_window=5, max_concurrent=2, min_call_reserve_usd=0.0)
+    p = plant(Scenario.PROBE_MISMATCH)
+    svc = AgentService(settings(), budget=budget,
+                       live_client_factory=lambda st: AnthropicModelClient(st, client=fake))  # type: ignore[arg-type]
+    run = await svc.run_to_completion("s", p, mode="live")
+    think = next(st for st in run.steps if st.kind.value == "think")
+    assert think.cost_usd == pytest.approx(FALLBACK)
+    assert "declined before any output (cyber)" in think.result_preview and "estimated" in think.result_preview
+    assert run.extra["estimated_usd"] == pytest.approx(PRIMARY)
+    assert run.extra["live_cost_usd"] == pytest.approx(FALLBACK)
+    assert budget.status("s", live_enabled=True, api_key_present=True).spent_today_usd == pytest.approx(
+        PRIMARY + FALLBACK, abs=1e-6)
+    assert run.status.value != "failed", run.extra
+    spend = next(k for k in impact(p, svc, "s")["kpis"] if k["label"] == "Live model spend")
+    assert spend["value"] == "$0.003" and spend["unit"] == "+ $0.002 estimated", spend
+    assert "estimated, not measured" in spend["note"]

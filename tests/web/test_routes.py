@@ -574,3 +574,17 @@ def test_a_visitor_whose_sandbox_was_cleared_sees_why(client: TestClient) -> Non
     assert 'id="session-notice"' in client.get("/").text  # shown until the visitor starts something new
     inject(client)
     assert 'id="session-notice"' not in client.get("/").text
+
+
+def test_a_failed_overview_refresh_clears_its_marker_so_the_next_poll_retries() -> None:
+    """The stale-tab refresh marks #overview as refreshing so one revision triggers one request. If that
+    request fails, the marker must be cleared on every failure event or later polls at the same revision
+    skip the refresh and the tab stays stale (checked in a browser by answering one refresh with a 503)."""
+    from pathlib import Path
+
+    import coldline.web
+
+    js = (Path(coldline.web.__file__).parent / "static" / "js" / "app.js").read_text()
+    for event in ("htmx:responseError", "htmx:sendError", "htmx:timeout", "htmx:swapError"):
+        assert f'"{event}"' in js
+    assert 'removeAttribute("data-refreshing")' in js

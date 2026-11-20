@@ -92,11 +92,11 @@ async def run_detail(request: Request, run_id: str, v: V, rt: RT) -> HTMLRespons
         return templates.TemplateResponse(request, "pages/error.html", ctx,
                                           headers={"HX-Trigger": json.dumps(trigger)})
     run = owned_run(rt, v, run_id)
-    refs = cx.evidence_refs(v.plant, rt.agent, v.sid, cx.run_evidence_ids(run))
     ctx = {
         **cx.shell(rt, v, "runs", f"Run {run.run_id}"),
         "run": run,
-        "evidence": cx.evidence_dict(refs),
+        "evidence_rows": cx.run_evidence(v.plant, rt.agent, v.sid, run),
+        "plant_now": v.plant.now(),
         "evidence_chart": cx.run_chart(v.plant, run),
     }
     return page(request, "pages/run_detail.html", ctx)

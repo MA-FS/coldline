@@ -115,6 +115,20 @@
     htmx.ajax("GET", "/", { target: "#overview", select: "#overview", swap: "outerHTML" });
     refreshShell();
   });
+  // A refresh that fails (an error status, a lost connection, a timeout) leaves the old overview in place.
+  // Clear the marker so the next 5 s poll at this revision tries again. A successful swap replaces #overview
+  // with a fresh element, so nothing needs clearing then. (htmx.ajax without a source element reports the
+  // request's element as a detached placeholder, so match on the target.)
+  function refreshFailed(e) {
+    var ov = document.getElementById("overview");
+    if (!ov || !e.detail || e.detail.target !== ov) return;
+    ov.removeAttribute("data-refreshing");
+    var panel = document.getElementById("agent-panel");
+    if (panel) panel.removeAttribute("aria-busy");
+  }
+  ["htmx:responseError", "htmx:sendError", "htmx:timeout", "htmx:swapError"].forEach(function (name) {
+    document.body.addEventListener(name, refreshFailed);
+  });
   document.body.addEventListener("htmx:sseMessage", function (e) {
     var data = e.detail && e.detail.data;
     if (typeof data === "string" && data.indexOf("hx-swap-oob") >= 0) refreshShell();

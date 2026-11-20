@@ -273,8 +273,11 @@ def test_an_amendment_states_the_exact_note_it_appends() -> None:
     call(ctx, "propose_work_order_amendment", wo_id="WO-1042", note=note,
          rationale="New evidence for the open calibration ticket.", evidence_ids=["TT-401", "TT-402"])
     (amend,) = ctx.run.approvals
-    assert amend.change[0].startswith("Append this note to WO-1042 (CH4, version 1)") and amend.change[1] == note
-    assert amend.rationale not in " ".join(amend.change)
+    assert amend.change == [(
+        "Append the agent's proposed note below to WO-1042 (CH4, version 1), exactly as shown, followed by the run "
+        "id and the name of the person who approves.")]
+    assert amend.proposed_text == [note] == [amend.payload["note"]]  # the model's words, kept apart from change
+    assert note not in " ".join(amend.change) and amend.rationale not in " ".join(amend.change)
 
 
 def test_the_documented_shadow_mode_proposes_and_hands_over_but_changes_no_record() -> None:

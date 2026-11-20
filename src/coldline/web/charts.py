@@ -21,7 +21,11 @@ from html import escape
 
 from markupsafe import Markup
 
+from coldline.agent.evidence import EXCURSION_LIMIT_C
 from coldline.contracts import Quality, Reading, Trend
+
+# The probe trend charts draw the same limit the evidence checks judge against (one constant, never a copy).
+PROBE_LIMIT_LINE: tuple[float, str] = (EXCURSION_LIMIT_C, f"High {EXCURSION_LIMIT_C:.1f} °C")
 
 
 @dataclass

@@ -8,7 +8,10 @@ Bounds: ``max_model_calls`` per run, ``max_tokens_per_call``, a per-call timeout
 for the whole run. In live mode every call first reserves an upper bound on its cost against the daily cap
 (see :mod:`coldline.agent.budget`): the sum over every attempt the request allows (the model, then each
 named server-side fallback). It is settled at the sum of every attempt the response reports, each at its
-own model's rate. A call whose outcome is unknown keeps its reservation.
+own model's rate. Of that, only usage the provider's billing rules establish is recorded as measured spend
+(the step's ``cost_usd``); a decline before any output in a category that is not billed, or is unknown, is
+kept apart in ``run.extra["estimated_usd"]`` (see :func:`coldline.agent.pricing.split_cost`). A call whose
+outcome is unknown keeps its reservation (``unreconciled_usd``).
 
 The batch of tool calls in one model turn stops at an accepted handover: the note is final, so a call after
 it in the same turn is not run (it gets a refused result), and nothing can change the records it states.
@@ -29,7 +32,7 @@ from coldline.agent.config import AgentSettings
 from coldline.agent.context import RunContext
 from coldline.agent.evidence import assess_chiller, gate_conclusion
 from coldline.agent.model import ModelClient, ModelError, ScriptExhausted
-from coldline.agent.pricing import cost_usd, reservation_usd
+from coldline.agent.pricing import reservation_usd, split_cost
 from coldline.agent.prompts import NUDGE, SYSTEM_PROMPT, build_trigger, prompt_version
 from coldline.agent.tools import ToolRegistry, affected_chillers
 from coldline.contracts import ApprovalStatus, RunStatus, StepKind, Tier, TraceStep
@@ -154,8 +157,11 @@ async def run_loop(
             raise
 
         measured_ms = int((time.monotonic() - t0) * 1000)
-        cost = cost_usd(response.model, response.usage, attempts)
-        _settle(budget, reservation, cost)
+        call_cost = split_cost(response.model, response.usage, attempts)
+        cost = call_cost.measured  # spend the provider-reported usage establishes
+        _settle(budget, reservation, call_cost.total)  # the cap also counts what is only estimated
+        if call_cost.estimated:
+            ctx.run.extra["estimated_usd"] = round(ctx.run.extra.get("estimated_usd", 0.0) + call_cost.estimated, 6)
         if turns is not None:
             turns.append({
                 "think": response.text,
@@ -168,6 +174,11 @@ async def run_loop(
         u = response.usage
         planned = ", ".join(c.name for c in response.tool_calls)
         billed = f" · {len(u.attempts)} billed attempts" if len(u.attempts) > 1 else ""
+        unsure = [a for a in u.attempts if not a.billing_known]
+        if unsure:
+            cats = ", ".join(sorted({a.category or "unknown category" for a in unsure}))
+            billed = (f" · {len(u.attempts)} attempts, {len(unsure)} declined before any output ({cats}): "
+                      f"+US${call_cost.estimated:.4f} estimated, not counted as measured")
         yield ctx.emit(
             StepKind.THINK,
             f"Model call {call_no} (limit {limits.max_model_calls})",

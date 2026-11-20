@@ -1,6 +1,6 @@
 {#- Run detail: tracing-console timeline.
-    Context: base_context(...) + run (RunTrace), evidence (dict[id, {title, detail, version?}]),
-             evidence_chart (Markup | None) -#}
+    Context: base_context(...) + run (RunTrace), evidence_rows (context.run_evidence: each cited record as the
+             run read it, plus how it reads now where that differs), plant_now, evidence_chart (Markup | None) -#}
 {% extends "base.html" %}
 {% from "components/icons.html" import icon %}
 {% import "components/ui.html" as ui %}
@@ -44,23 +44,24 @@
 
   <div class="stack">
     {% if evidence_chart %}
-    {% call ui.panel("Evidence: probe comparison", id="evidence-chart") %}
+    {% call ui.panel("Evidence: probe comparison now", id="evidence-chart", meta="Current plant data, not as at this run") %}
       {{ evidence_chart }}
       <div class="legend" style="margin-top: 8px"><span><i class="amber"></i>TT-401 primary</span><span><i></i>TT-402 independent</span><span><i class="shade"></i>Δ &gt; 2.0 °C</span><span><i class="stale"></i>stale</span></div>
     {% endcall %}
     {% endif %}
 
-    {% set ids = [] %}
-    {% for s in run.steps %}{% for e in s.evidence_ids %}{% if e not in ids %}{% set _ = ids.append(e) %}{% endif %}{% endfor %}{% endfor %}
-    {% call ui.panel("Evidence", id="evidence", count=ids|length) %}
-      {% if ids %}
+    {#- Each record as the run read it when it cited it; the plant now only where it differs, labelled. -#}
+    {% set rows = evidence_rows or [] %}
+    {% call ui.panel("Evidence", id="evidence", count=rows|length, meta="As this run read it · changes since marked Now") %}
+      {% if rows %}
       <table class="ev-table">
-        {% for rid in ids %}
-          {% set info = evidence.get(rid, {}) if evidence else {} %}
-          <tr id="ev-{{ rid }}">
-            <td>{{ ui.ev_chip(rid) }}</td>
-            <td><div class="t">{{ info.get('title') or evidence_kind(rid)[1] }}</div>{% if info.get('detail') %}<div class="d">{{ info.detail }}{% if info.get('version') %} · v{{ info.version }}{% endif %}</div>{% endif %}</td>
-            <td class="by">{% for s in run.steps if rid in s.evidence_ids %}#{{ s.n }}{% if not loop.last %} {% endif %}{% endfor %}</td>
+        {% for row in rows %}
+          <tr id="ev-{{ row.id }}">
+            <td>{{ ui.ev_chip(row.id) }}</td>
+            <td><div class="t">{{ row.title or evidence_kind(row.id)[1] }}</div>
+              {%- if row.then %}<div class="d">{{ row.then }}<span class="d-at"> · as at {{ row.then_at|hhmm }}{% if row.then_step %}, step #{{ row.then_step }}{% endif %}</span></div>{% endif %}
+              {%- if row.now %}<div class="d d--now">{% if row.then %}Now ({{ plant_now|hhmm }}): {% else %}Now ({{ plant_now|hhmm }}; not recorded with this run): {% endif %}{{ row.now }}</div>{% endif %}</td>
+            <td class="by">{% for n in row.steps %}#{{ n }}{% if not loop.last %} {% endif %}{% endfor %}</td>
           </tr>
         {% endfor %}
       </table>

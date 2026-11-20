@@ -22,12 +22,15 @@ from coldline.contracts import (
     TraceStep,
     WorkOrder,
 )
+from coldline.records import describe_records
 
 if TYPE_CHECKING:
     from coldline.agent.approvals import ApprovalStore
     from coldline.agent.evidence import Assessment
 
 AGENT_ACTOR = "agent"
+# run.extra key: record id -> how it read when the run last cited it ({title, detail, version, at, step}).
+EVIDENCE_AT = "evidence_at"
 
 # Scopes granted to the agent's service identity. Each tool requires one; removing a scope here
 # disables the tool without touching the model or the prompt (least privilege, in one place).
@@ -77,9 +80,22 @@ class RunContext:
     def emit(self, kind: StepKind, title: str, **fields: Any) -> TraceStep:
         step = TraceStep(n=len(self.run.steps) + 1, kind=kind, title=title, **fields)
         self.run.steps.append(step)
+        self.record_evidence(step.n, step.evidence_ids)
         if self.on_step:
             self.on_step(step)
         return step
+
+    def record_evidence(self, step_n: int, ids: list[str]) -> None:
+        """Store how each record a step cites read at that moment (``run.extra["evidence_at"]``), so the trace
+        shows the run's evidence as it was, not as the plant reads later. A record cited again later in the
+        run keeps its latest description in this run."""
+        if not ids:
+            return
+        store = self.run.extra.setdefault(EVIDENCE_AT, {})
+        at = self.systems.now().isoformat()
+        approvals = {a.id: a for a in self.approvals.list_all()}
+        for rid, ref in describe_records(self.systems, approvals, list(dict.fromkeys(ids))).items():
+            store[rid] = {**ref.model_dump(include={"title", "detail", "version"}), "at": at, "step": step_n}
 
     def guardrail(self, title: str, summary: str, *, tier: Tier | None = None, ok: bool = False,
                   args: dict | None = None, evidence_ids: list[str] | None = None) -> TraceStep:

@@ -32,6 +32,11 @@ the UTC day it was made. A liability still unresolved at midnight belongs to the
 process settles it against the new day, and a process started after midnight carries yesterday's open
 reservations into today as unreconciled spend instead of dropping them with yesterday's totals.
 
+The daily cap resets at midnight, but an amount that is still unreconciled does not vanish with the day it
+was spent on: the ledger keeps it as a dated record (``carried_unreconciled``, day -> US$). It no longer
+counts against today's cap, and it is reported with its day until an operator reconciles it against the
+provider's usage report and removes it.
+
 **One writer.** The ledger is only correct while one process writes it. A guard takes an exclusive lock on
 ``agent_spend.json.lock`` for its lifetime; a second process (or a second guard) on the same data directory
 cannot take it, and keeps paid mode off with a visible reason rather than admit spend the first cannot see.
@@ -70,6 +75,7 @@ from pydantic import BaseModel
 log = logging.getLogger(__name__)
 LEDGER_VERSION = 3
 LEDGER_FIELDS = frozenset({"version", "day", "spent_usd", "unreconciled_usd", "outstanding"})
+CARRIED_FIELD = "carried_unreconciled"  # optional: earlier days' amounts still waiting to be reconciled
 LEGACY_FIELDS = frozenset({"day", "spent_usd"})  # version 1, before reservations were journalled
 QUARANTINE_SUFFIX = ".quarantined-"
 LOCK_SUFFIX = ".lock"
@@ -108,9 +114,12 @@ def _day(value: object, name: str) -> str:
     return value
 
 
-def parse_ledger(data: object, today: str) -> tuple[str, float, float, dict[str, tuple[float, str]]]:
-    """Validate a ledger's contents: ``(day, spent, unreconciled, outstanding)``, or ValueError/TypeError.
-    ``outstanding`` maps a reservation id to ``(amount, day reserved)``.
+def parse_ledger(
+    data: object, today: str
+) -> tuple[str, float, float, dict[str, tuple[float, str]], dict[str, float]]:
+    """Validate a ledger's contents: ``(day, spent, unreconciled, outstanding, carried)``, or
+    ValueError/TypeError. ``outstanding`` maps a reservation id to ``(amount, day reserved)``; ``carried``
+    maps an earlier day to the unreconciled amount it left behind.
 
     Accepts the current format exactly, the version-1 format (``{"day", "spent_usd"}``), which it migrates
     with nothing unreconciled or outstanding, and the version-2 format (outstanding amounts without their
@@ -122,7 +131,7 @@ def parse_ledger(data: object, today: str) -> tuple[str, float, float, dict[str,
     if "version" not in data and keys == LEGACY_FIELDS:
         data = {**data, "version": LEDGER_VERSION, "unreconciled_usd": 0.0, "outstanding": {}}
         version = LEDGER_VERSION
-    elif version not in (2, LEDGER_VERSION) or isinstance(version, bool) or keys != LEDGER_FIELDS:
+    elif version not in (2, LEDGER_VERSION) or isinstance(version, bool) or keys - {CARRIED_FIELD} != LEDGER_FIELDS:
         raise ValueError(f"unsupported ledger format (version {data.get('version')!r}, fields {sorted(keys)})")
     day = _day(data["day"], "day")
     if day > today:
@@ -147,7 +156,15 @@ def parse_ledger(data: object, today: str) -> tuple[str, float, float, dict[str,
         if reserved_on > day:
             raise ValueError(f"outstanding[{key}] is dated {reserved_on}, after the ledger day {day}")
         outstanding[key] = (_amount(value["usd"], f"outstanding[{key}].usd"), reserved_on)
-    return day, spent, unreconciled, outstanding
+    carried: dict[str, float] = {}
+    raw_carried = data.get(CARRIED_FIELD, {})
+    if not isinstance(raw_carried, dict):
+        raise TypeError(f"{CARRIED_FIELD} must be an object of day -> amount")
+    for carried_day, amount in raw_carried.items():
+        if _day(carried_day, f"{CARRIED_FIELD} day") >= day:
+            raise ValueError(f"{CARRIED_FIELD} day {carried_day} is not before the ledger day {day}")
+        carried[carried_day] = _amount(amount, f"{CARRIED_FIELD}[{carried_day}]")
+    return day, spent, unreconciled, outstanding, carried
 
 
 class BudgetStatus(BaseModel):
@@ -160,6 +177,7 @@ class BudgetStatus(BaseModel):
     reserved_usd: float
     remaining_usd: float
     unreconciled_usd: float = 0.0
+    carried_unreconciled: dict[str, float] = {}  # earlier day -> amount still waiting to be reconciled
     ledger_ok: bool = True
     session_runs_used: int
     session_runs_limit: int
@@ -209,6 +227,7 @@ class BudgetGuard:
         self._day = self._today()
         self._spent = 0.0
         self._unreconciled = 0.0
+        self._carried: dict[str, float] = {}  # earlier day -> unreconciled amount that day left behind
         self.ledger_error = ""  # detail for the operator's log
         self.ledger_notice = ""  # what a visitor is told (no paths or file contents)
         self.overrun = ""  # set when a call cost more than its reservation: the bound did not hold
@@ -291,7 +310,7 @@ class BudgetGuard:
             self._fail(f"could not read the spend ledger ({type(exc).__name__}: {exc})")
             return
         try:
-            day, spent, unreconciled, reserved = parse_ledger(json.loads(raw), self._day)
+            day, spent, unreconciled, reserved, carried = parse_ledger(json.loads(raw), self._day)
         except Exception as exc:  # noqa: BLE001 - any damage fails closed; it must never stop the app starting
             self._quarantine(f"{type(exc).__name__}: {str(exc)[:200]}")
             return
@@ -301,6 +320,9 @@ class BudgetGuard:
         outstanding = sum(usd for usd, _ in reserved.values())
         self._spent = (spent if day == self._day else 0.0) + outstanding
         self._unreconciled = (unreconciled if day == self._day else 0.0) + outstanding
+        self._carried = carried
+        if day != self._day:  # the cap resets, the record of what is still unreconciled does not
+            self._carry(day, unreconciled)
         if outstanding:
             days = ", ".join(sorted({d for _, d in reserved.values()}))
             log.warning("spend ledger: US$%.4f reserved by a previous process (on %s) counted as spent today "
@@ -318,6 +340,7 @@ class BudgetGuard:
             "day": self._day,
             "spent_usd": round(self._spent, 6),
             "unreconciled_usd": round(self._unreconciled, 6),
+            CARRIED_FIELD: {d: round(v, 6) for d, v in sorted(self._carried.items())},
             "outstanding": {str(k): {"usd": round(v, 6), "day": self._reserved_on.get(k, self._day)}
                             for k, v in self._reservations.items()},
         }
@@ -348,8 +371,18 @@ class BudgetGuard:
         are charged to the day they settle on, the same day a restarted process would carry them into."""
         today = self._today()
         if today != self._day:
+            self._carry(self._day, self._unreconciled)
             self._day, self._spent, self._unreconciled = today, 0.0, 0.0
             self._origin_spent.clear()
+            self._save()  # the dated record of what is still unreconciled is part of the ledger
+
+    def _carry(self, day: str, usd: float) -> None:
+        """Keep a finished day's still-unreconciled amount as a dated record. It stops counting against the
+        daily cap but is never rewritten as zero."""
+        if usd > 1e-9:
+            self._carried[day] = self._carried.get(day, 0.0) + usd
+            log.warning("spend ledger: US$%.4f from %s is still unreconciled against the provider's usage "
+                        "report (kept as a dated record)", usd, day)
 
     # ------------------------------------------------------------------ admission
 
@@ -510,6 +543,7 @@ class BudgetGuard:
                 reserved_usd=round(reserved, 4),
                 remaining_usd=round(max(0.0, self.daily_cap_usd - self._spent - reserved), 4),
                 unreconciled_usd=round(self._unreconciled, 4),
+                carried_unreconciled={d: round(v, 4) for d, v in sorted(self._carried.items())},
                 ledger_ok=not self.ledger_error,
                 session_runs_used=self._used(self._runs, session_id, now - self.window_s),
                 session_runs_limit=self.session_runs_per_window,

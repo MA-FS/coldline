@@ -708,8 +708,10 @@ def propose_work_order_amendment(ctx: RunContext, args: AmendIn) -> Proposal:
         action="amend_work_order",
         title=f"Add evidence note to {wo.id}",
         rationale=args.rationale,
-        change=[(f"Append this note to {wo.id} ({wo.asset_id}, version {wo.version}), followed by the run id and "
-                "the name of the person who approves:"), args.note],
+        # Code states the action; the note is the model's words, kept apart and labelled as such.
+        change=[(f"Append the agent's proposed note below to {wo.id} ({wo.asset_id}, version {wo.version}), "
+                 "exactly as shown, followed by the run id and the name of the person who approves.")],
+        proposed_text=[args.note],
         payload={"wo_id": wo.id, "asset_id": wo.asset_id, "note": args.note},
         evidence_ids=list(dict.fromkeys([wo.id, *args.evidence_ids])),
         sources=[Source("work_order", wo.id, wo.asset_id), *_evidence_sources(ctx, wo.asset_id, args.evidence_ids)],

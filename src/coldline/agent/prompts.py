@@ -97,6 +97,9 @@ def historian_screen(systems: PlantSystems) -> list[str]:
             if s.latest_c > EXCURSION_LIMIT_C:
                 lines.append(f"{asset.id} {s.tag} reads {s.latest_c:.1f} °C, above the "
                              f"{EXCURSION_LIMIT_C:.1f} °C illustrative limit")
+            elif s.peak_c > EXCURSION_LIMIT_C:  # back within the limit now, but it was above it
+                lines.append(f"{asset.id} {s.tag} reached {s.peak_c:.1f} °C at {s.peak_ts:%H:%M}, above the "
+                             f"{EXCURSION_LIMIT_C:.1f} °C illustrative limit, and now reads {s.latest_c:.1f} °C")
             elif s.peak_c - s.latest_c >= RECOVERY_MARGIN_C and s.peak_c - s.start_c >= RISE_SIGNIFICANT_C:
                 lines.append(f"{asset.id} {s.tag} peaked at {s.peak_c:.1f} °C at {s.peak_ts:%H:%M} and now "
                              f"reads {s.latest_c:.1f} °C")

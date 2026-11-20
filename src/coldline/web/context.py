@@ -9,11 +9,13 @@ from __future__ import annotations
 import hashlib
 import json
 import statistics
+from datetime import datetime
 from typing import Any
 
 from markupsafe import Markup
 
 from coldline.agent import AgentService, handover, load_eval_results
+from coldline.agent.context import EVIDENCE_AT
 from coldline.contracts import (
     Alarm,
     AlarmPriority,
@@ -31,7 +33,7 @@ from coldline.contracts import (
     Trend,
 )
 from coldline.records import describe_records
-from coldline.web.charts import ChartEvent, Series, trend_svg
+from coldline.web.charts import PROBE_LIMIT_LINE, ChartEvent, Series, trend_svg
 from coldline.web.render import base_context, hhmm
 from coldline.web.runtime import ROLES, Runtime, Visitor
 from coldline.web.views import chiller_detail, citations, plant_view, probe_tags
@@ -186,6 +188,37 @@ def run_evidence_ids(run: RunTrace) -> list[str]:
     return ids
 
 
+def run_evidence(plant: PlantSystems, agent: AgentService, sid: str, run: RunTrace) -> list[dict[str, Any]]:
+    """The trace's evidence rows: each cited record as it read when the run cited it (``then``, with the plant
+    time and step), and how it reads now only where that differs, labelled as now. A record the run did not
+    describe when it cited it (a run recorded before descriptions were stored) shows only its current state,
+    labelled as such, never as the run's evidence."""
+    recorded = run.extra.get(EVIDENCE_AT) or {}
+    ids = [i for s in run.steps for i in s.evidence_ids]
+    ids = list(dict.fromkeys([*ids, *run_evidence_ids(run)]))
+    now = evidence_dict(evidence_refs(plant, agent, sid, ids))
+    rows = []
+    for rid in ids:
+        before, after = recorded.get(rid), now.get(rid, {})
+        then = _ref_text(before) if before else ""
+        current = _ref_text(after)
+        rows.append({
+            "id": rid,
+            "title": (before or after).get("title") or "",
+            "then": then,
+            "then_at": datetime.fromisoformat(before["at"]) if before and before.get("at") else None,
+            "then_step": before.get("step") if before else None,
+            "now": current if not before or current != then else "",
+            "steps": [s.n for s in run.steps if rid in s.evidence_ids],
+        })
+    return rows
+
+
+def _ref_text(ref: dict[str, Any]) -> str:
+    detail = ref.get("detail") or ""
+    return f"{detail} · v{ref['version']}" if detail and ref.get("version") else detail
+
+
 def run_chart(plant: PlantSystems, run: RunTrace) -> Markup | None:
     """Probe comparison for the chiller the run investigated, from the visitor's current historian data."""
     snap = plant.snapshot()
@@ -209,9 +242,9 @@ def run_chart(plant: PlantSystems, run: RunTrace) -> Markup | None:
         divergence=(primary, reference, 2.0),
         y_min=min([1.0, *vals]),
         y_max=max([7.0, *vals]),
-        limit=(4.0, "High 4.0 °C"),
+        limit=PROBE_LIMIT_LINE,
         x_ticks=4,
-        title=f"{primary} vs {reference}, last 60 minutes (current plant data)",
+        title=f"{primary} vs {reference}, the last 60 minutes now (current plant data, not as at this run)",
     )
 
 
@@ -277,6 +310,8 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
     live_calls = sum(r.extra.get("live_calls", 0) for r in live)
     live_spend = sum(r.extra.get("live_cost_usd", 0.0) for r in live)
     unreconciled = sum(r.extra.get("unreconciled_usd", 0.0) for r in live)
+    estimated = sum(r.extra.get("estimated_usd", 0.0) for r in live)
+    carried = agent.live_status(sid).carried_unreconciled  # earlier days' spend still not reconciled
     recorded_costs = [r.extra.get("recorded_cost_usd", 0.0) for r in runs if r.extra.get("recording")]
     authored = sum(1 for r in runs if r.extra.get("recording", {}).get("recorded") == "hand-authored")
     held = sorted({e.target for e in events if e.action == "place_qa_hold" and e.actor == "agent"})
@@ -323,8 +358,9 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
         {
             "label": "Live model spend",
             "value": f"${live_spend:.3f}" if live else "$0",
-            "unit": f"+ ${unreconciled:.3f} unreconciled" if unreconciled else "",
-            "note": _live_note(len(live), live_calls, unreconciled, refused_live),
+            "unit": " ".join(x for x in (f"+ ${estimated:.3f} estimated" if estimated else "",
+                                         f"+ ${unreconciled:.3f} unreconciled" if unreconciled else "") if x),
+            "note": _live_note(len(live), live_calls, unreconciled, refused_live, estimated, carried),
             "kind": "measured",
         },
         {
@@ -375,7 +411,8 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
         ),
         (
             "Agent cost uses list API prices and measured tokens. Live spend is what this session's live calls "
-            "cost. Recorded cost is what the live run behind each replay cost when it was recorded; the replay "
+            "cost by the provider's reported usage; estimated and unreconciled amounts are shown apart and only "
+            "count against the daily cap. Recorded cost is what the live run behind each replay cost when it was recorded; the replay "
             "itself costs nothing, and the poisoned-email trace is hand-authored with token counts taken from "
             "live runs. Hosting is excluded."
         ),
@@ -387,15 +424,24 @@ def impact(plant: PlantSystems, agent: AgentService, sid: str) -> dict[str, Any]
     return {"kpis": kpis, "assumptions": assumptions}
 
 
-def _live_note(runs: int, calls: int, unreconciled: float, refused: int) -> str:
+def _live_note(runs: int, calls: int, unreconciled: float, refused: int, estimated: float = 0.0,
+               carried: dict[str, float] | None = None) -> str:
     parts = []
     if runs:
-        parts.append(f"confirmed API cost of {calls} model call(s) in {runs} live run(s) this session")
+        parts.append(f"measured: provider-reported usage of {calls} model call(s) in {runs} live run(s) this "
+                     "session, at list prices")
     else:
         parts.append("Replays cost nothing; switch to Live to measure real spend")
+    if estimated:
+        parts.append(f"US${estimated:.3f} more is estimated, not measured: attempts that declined before any "
+                     "output in a refusal category the provider does not bill (or an unknown one). Their reported "
+                     "usage still counts against the daily cap until reconciled")
     if unreconciled:
         parts.append(f"US${unreconciled:.3f} more is unreconciled: calls whose outcome is unknown (a timeout or "
                      "lost connection) count at their full reserved bound until checked against the provider")
+    if carried:
+        days = ", ".join(f"US${usd:.3f} from {day}" for day, usd in carried.items())
+        parts.append(f"{days} is still unreconciled from earlier days (no longer counted against today's cap)")
     if refused:
         parts.append(f"{refused} live request(s) ran as replay before any model call and cost nothing")
     return "; ".join(parts)

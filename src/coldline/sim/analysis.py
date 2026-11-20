@@ -4,7 +4,9 @@ from datetime import datetime, timedelta
 
 from coldline.contracts import Quality, Reading, Trend
 
-FRESHNESS_WINDOW = timedelta(minutes=5)
+FRESHNESS_WINDOW = timedelta(minutes=5)  # a sample older than this is stale
+DIVERGENCE_WINDOW_MIN = 15  # the plant's "Δ > 2.0 °C (15 min)" alarm
+DIVERGENCE_LIMIT_C = 2.0  # mean probe gap above which the probes disagree
 
 
 def freshness(reading: Reading, now: datetime) -> Quality:
@@ -45,11 +47,12 @@ def divergence(trend_a: Trend, trend_b: Trend, window_min: int) -> float | None:
     return sum(gaps) / window_min
 
 
-def is_diverging(trend_a: Trend, trend_b: Trend, now: datetime, window_min: int = 15) -> bool | None:
+def is_diverging(trend_a: Trend, trend_b: Trend, now: datetime,
+                 window_min: int = DIVERGENCE_WINDOW_MIN) -> bool | None:
     """Apply the demo's 2 °C mean-gap threshold. None means evidence is insufficient."""
     if not trend_a.points or not trend_b.points:
         return None
     if not is_comparison_valid(trend_a.points[-1], trend_b.points[-1], now):
         return None
     gap = divergence(trend_a, trend_b, window_min)
-    return None if gap is None else gap > 2.0
+    return None if gap is None else gap > DIVERGENCE_LIMIT_C

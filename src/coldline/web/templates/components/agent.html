@@ -55,13 +55,19 @@
     <span>{{ a.id }}</span><span>{{ a.action }}</span><span>tier APPROVE</span>
     <a href="{{ prefix }}/runs/{{ a.run_id }}">{{ a.run_id }}</a>
   </div>
-  {#- What runs is stated by code before any button: the exact change (dispatch date and plant time, the exact
-      note), then what code verified. The model's rationale is labelled and kept apart. -#}
+  {#- What runs is stated by code before any button: the exact change (dispatch date and plant time), then any
+      text the change would write verbatim, which the model wrote and is labelled so, then what code verified.
+      Nothing under a "set in code" or "verified in code" label comes from the model. -#}
   {% if a.change %}
   <div class="approval-change">
     <div class="approval-label">Runs on approval (set in code)</div>
-    <p class="approval-change-line">{{ a.change[0] }}</p>
-    {% for line in a.change[1:] %}<blockquote class="approval-quote">{{ line }}</blockquote>{% endfor %}
+    {% for line in a.change %}<p class="approval-change-line">{{ line }}</p>{% endfor %}
+  </div>
+  {% endif %}
+  {% if a.proposed_text %}
+  <div class="approval-proposed">
+    <div class="approval-label">Proposed by the agent (model-written, not verified) · written exactly as shown if approved</div>
+    {% for line in a.proposed_text %}<blockquote class="approval-quote">{{ line }}</blockquote>{% endfor %}
   </div>
   {% endif %}
   {% if a.checks %}

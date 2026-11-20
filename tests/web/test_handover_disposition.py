@@ -231,7 +231,7 @@ def test_an_earlier_note_is_marked_superseded_when_a_later_run_holds_its_lot(cli
     # The note itself is unchanged: as at its time, L-2231 was not on hold.
     assert "L-2231 (CH4, due 06:15): not on hold." in disposition(clipboard(page))
     row = sources(page)["L-2231"]
-    assert "ready" in row and "Now: " in row and "hold" in row.split("Now: ", 1)[1], row
+    assert "ready" in row and "Now (" in row and "hold" in row.split("Now (", 1)[1], row
     assert 'Superseded' in page.split('id="handover-state"', 1)[1].split("</span>", 2)[1]
     # The latest note is current: no banner, and its copy opens with its own snapshot label.
     assert banner(latest_page) == [] and clipboard(latest_page)[0].startswith(f"Handover {second.run_id} ")
@@ -251,6 +251,47 @@ def test_a_decision_after_the_handover_marks_the_note_superseded(client: TestCli
     assert "L-2231 is now due 09:00; this note says 06:15." in copied, copied
     waiting = next(x for x in copied if x.startswith("Waiting"))
     assert dispatch.id not in waiting, waiting  # the current state no longer lists it as waiting
+
+
+def evidence_rows(page: str) -> dict[str, str]:
+    """The trace's Evidence table: record id -> its row's text."""
+    table = page.split('id="evidence"', 1)[1].split("</table>", 1)[0]
+    rows = re.findall(r'<tr id="ev-([^"]+)">(.*?)</tr>', table, re.DOTALL)
+    return {rid: " ".join(html.unescape(re.sub(r"<[^>]+>", " ", body)).split()) for rid, body in rows}
+
+
+def test_an_older_trace_shows_its_evidence_as_the_run_read_it(client: TestClient) -> None:
+    """The review's case: door open, then probe mismatch. The first run's trace showed L-2231 as held (the
+    plant now) under Evidence, beside its own snapshot saying it was not. Its evidence is now as the run read
+    it, and the hold appears only on a line labelled as now."""
+    first, _, plant = run_scenario(client, "door_open")
+    run_scenario(client, "probe_mismatch")
+    hold = plant.active_hold("L-2231")
+    assert hold is not None
+    row = evidence_rows(client.get(f"/runs/{first.run_id}").text)["L-2231"]
+    then, now = row.split(" Now (", 1)
+    assert "ready" in then and "hold" not in then and " · as at " in then, row
+    assert "hold" in now and "ready" not in now, row
+    # The latest run's evidence matches the plant, so it carries no "Now" line at all.
+    latest = client.app.state.runtime.agent.list_runs(_sid(client))[0]
+    latest_row = evidence_rows(client.get(f"/runs/{latest.run_id}").text)["L-2231"]
+    assert "hold" in latest_row and "Now (" not in latest_row, latest_row
+
+
+def test_an_open_handover_refreshes_its_sources_with_the_banner(client: TestClient) -> None:
+    """The banner's poll swaps the sources table too, so a "Now" line moves with the plant: after the
+    dispatch change is approved elsewhere, the refreshed sources show the new time."""
+    run, page, _ = run_scenario(client, "probe_mismatch")
+    poll = page.split('id="handover-banner"', 1)[1].split(">", 1)[0]
+    oob = re.search(r'hx-select-oob="([^"]+)"', poll)
+    assert oob and "#sources" in oob.group(1).split(","), poll
+    dispatch = next(a for a in run.approvals if a.action == "change_dispatch")
+    client.post("/session/role", data={"role": "Shift Supervisor"}, headers=HX)
+    client.post(f"/approvals/{dispatch.id}/approve", data={"decision_token": dispatch.decision_token},
+                headers=HX)
+    refreshed = client.get(f"/handover?run_id={run.run_id}", headers=HX).text
+    row = sources(refreshed)["L-2231"]
+    assert "due 06:15" in row.split("Now (", 1)[0] and "due 09:00" in row.split("Now (", 1)[1], row
 
 
 def test_a_later_run_without_a_handover_supersedes_the_last_note() -> None:

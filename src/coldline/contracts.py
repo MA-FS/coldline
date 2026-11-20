@@ -300,6 +300,9 @@ class Approval(BaseModel):
     payload: dict[str, Any]
     evidence_ids: list[str] = []
     change: list[str] = []  # exactly what runs on approval, composed in code from the payload and records
+    # Model-written text the change writes verbatim (an amendment's note): shown labelled as the agent's, never
+    # under the code-set label. ``change`` itself never contains model text.
+    proposed_text: list[str] = []
     checks: list[str] = []  # preconditions code verified at proposal time; re-checked on approval
     source_versions: dict[str, int] = {}  # record id -> version at proposal time
     status: ApprovalStatus = ApprovalStatus.PENDING

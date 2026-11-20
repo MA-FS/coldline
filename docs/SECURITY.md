@@ -40,6 +40,8 @@ talk its way past. This document lists the threats and the control for each.
   addresses. The daily US$ cap is the backstop.
 - **Unreconciled spend.** A timed-out call is counted at its full reservation because the provider may have
   billed it. An operator reconciles `unreconciled_usd` in the ledger against the provider's usage report.
+  Likewise, a fallback attempt that declined before any output in a refusal category the provider does not
+  bill is counted against the cap at its reported usage but shown as estimated, not measured spend.
   The per-address share of the cap is kept in memory and starts again on a restart; the journalled global cap
   is the backstop.
 - **Eviction is an availability trade-off.** A visitor whose idle sandbox is cleared (idle timeout, capacity,

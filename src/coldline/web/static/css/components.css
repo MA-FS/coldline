@@ -205,6 +205,8 @@
 .approval-rationale { color: var(--text-2); font-size: var(--fs-md); margin: 0; }
 .approval-label { color: var(--text-3); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: var(--track-caps); margin-bottom: 2px; }
 .approval-change { border-left: 3px solid var(--accent); padding-left: 10px; }
+/* Model-written text a change writes verbatim: visibly apart from the code-set change above it. */
+.approval-proposed { border-left: 3px dashed var(--text-3); padding-left: 10px; }
 .approval-change-line { margin: 0; color: var(--text-1); font-size: var(--fs-md); }
 .approval-quote { margin: 6px 0 0; padding: 6px 10px; background: var(--bg-inset); border: 1px solid var(--line-soft); border-radius: var(--r-1); color: var(--text-1); font-size: var(--fs-sm); white-space: pre-wrap; word-break: break-word; }
 .approval-checks ul { margin: 0; padding-left: 1.2em; color: var(--text-2); font-size: var(--fs-sm); }

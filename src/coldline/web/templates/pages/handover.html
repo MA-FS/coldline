@@ -52,7 +52,7 @@
     {% call ui.panel("Sources cited", id="sources", count=sources|length, meta="As at " ~ ((sup.at or run.started_at)|hhmm) ~ ", with any change since") %}
       <table class="ev-table">
         {% for row in sources %}
-          <tr id="ev-{{ row.id }}"><td>{{ ui.ev_chip(row.id) }}</td><td><div class="t">{{ row.title or evidence_kind(row.id)[1] }}</div>{% if row.then %}<div class="d">{{ row.then }}</div>{% endif %}{% if row.now %}<div class="d d--now">{{ 'Now: ' if row.has_then else '' }}{{ row.now }}</div>{% endif %}</td></tr>
+          <tr id="ev-{{ row.id }}"><td>{{ ui.ev_chip(row.id) }}</td><td><div class="t">{{ row.title or evidence_kind(row.id)[1] }}</div>{% if row.then %}<div class="d">{{ row.then }}</div>{% endif %}{% if row.now %}<div class="d d--now">Now ({{ plant_now|hhmm }}{{ '' if row.has_then else '; not recorded with the note' }}): {{ row.now }}</div>{% endif %}</td></tr>
         {% endfor %}
       </table>
     {% endcall %}

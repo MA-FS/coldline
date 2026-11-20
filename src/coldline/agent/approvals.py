@@ -74,6 +74,7 @@ class Proposal:
     sources: list[Source]
     approver_roles: tuple[str, ...]
     change: list[str] = field(default_factory=list)  # exactly what runs on approval, composed in code
+    proposed_text: list[str] = field(default_factory=list)  # model text the change writes verbatim
     checks: list[str] = field(default_factory=list)  # preconditions code verified (re-checked on approval)
 
 
@@ -257,6 +258,7 @@ class ApprovalStore:
                 payload=proposal.payload,
                 evidence_ids=proposal.evidence_ids,
                 change=list(proposal.change),
+                proposed_text=list(proposal.proposed_text),
                 checks=list(proposal.checks),
                 source_versions=versions,
                 idempotency_key=hashlib.sha256(key_material.encode()).hexdigest()[:24],

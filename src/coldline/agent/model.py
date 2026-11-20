@@ -159,7 +159,7 @@ def _normalise(response: Any) -> ModelResponse:
         stop_reason=response.stop_reason or "end_turn",
         text="\n".join(notes),
         tool_calls=calls,
-        usage=billed_usage(response.usage),
+        usage=billed_usage(response.usage, response),
         raw_content=list(response.content),
     )
 
@@ -168,23 +168,48 @@ def _tokens(obj: Any, name: str) -> int:
     return int(getattr(obj, name, 0) or 0)
 
 
-def billed_usage(u: Any) -> Usage:
-    """Usage for every billed attempt of one call. With server-side fallback the top-level counters cover
-    only the attempt that produced the message; ``usage.iterations`` lists each attempt (a declined primary,
-    the fallback that answered) with its own model and counts, and is the source of truth for billing."""
+def _category(obj: Any) -> str | None:
+    value = getattr(obj, "category", None)
+    return str(value) if value else None
+
+
+def billed_usage(u: Any, response: Any = None) -> Usage:
+    """Usage for every attempt of one call. With server-side fallback the top-level counters cover only the
+    attempt that produced the message; ``usage.iterations`` lists each attempt (a declined primary, the
+    fallback that answered) with its own model and counts, and is the source of truth for billing.
+
+    Declined attempts are marked with their refusal category, which decides whether a decline before any
+    output is billed (see :mod:`coldline.agent.pricing`). Every ``iterations`` entry but the last declined;
+    the ``fallback`` content blocks, one per switch, name each one's category in order (``trigger``). The
+    last attempt declined too when the response itself stopped on a refusal (``stop_details`` names it)."""
     top = Usage(
         input_tokens=_tokens(u, "input_tokens"),
         output_tokens=_tokens(u, "output_tokens"),
         cache_creation_input_tokens=_tokens(u, "cache_creation_input_tokens"),
         cache_read_input_tokens=_tokens(u, "cache_read_input_tokens"),
     )
-    attempts = [
-        Attempt(model=getattr(i, "model", None) or None, kind=str(getattr(i, "type", "") or "message"),
-                input_tokens=_tokens(i, "input_tokens"), output_tokens=_tokens(i, "output_tokens"),
-                cache_creation_input_tokens=_tokens(i, "cache_creation_input_tokens"),
-                cache_read_input_tokens=_tokens(i, "cache_read_input_tokens"))
-        for i in getattr(u, "iterations", None) or []
-    ]
+    refused = getattr(response, "stop_reason", None) == "refusal"
+    final_category = _category(getattr(response, "stop_details", None))
+    triggers = [_category(getattr(b, "trigger", None)) for b in getattr(response, "content", None) or []
+                if getattr(b, "type", None) == "fallback"]
+    iterations = list(getattr(u, "iterations", None) or [])
+    attempts = []
+    for n, i in enumerate(iterations):
+        last = n == len(iterations) - 1
+        declined = refused if last else True
+        category = (final_category if last else (triggers[n] if n < len(triggers) else None)) if declined else None
+        attempts.append(Attempt(
+            model=getattr(i, "model", None) or None, kind=str(getattr(i, "type", "") or "message"),
+            input_tokens=_tokens(i, "input_tokens"), output_tokens=_tokens(i, "output_tokens"),
+            cache_creation_input_tokens=_tokens(i, "cache_creation_input_tokens"),
+            cache_read_input_tokens=_tokens(i, "cache_read_input_tokens"),
+            declined=declined, category=category))
+    if not attempts and refused:  # a single attempt that declined, without per-attempt usage
+        attempts = [Attempt(model=getattr(response, "model", None) or None, input_tokens=top.input_tokens,
+                            output_tokens=top.output_tokens,
+                            cache_creation_input_tokens=top.cache_creation_input_tokens,
+                            cache_read_input_tokens=top.cache_read_input_tokens,
+                            declined=True, category=final_category)]
     return Usage.billed(top, attempts)
 
 

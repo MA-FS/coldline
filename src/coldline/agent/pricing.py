@@ -18,6 +18,13 @@ So the bound and the settlement both work per attempt:
   named fallback an unnamed ``message`` attempt can only be the requested model; with more, it may be a
   declined fallback too, so it is priced at the most expensive model the request allowed. An ambiguous
   liability is never settled below what it may have cost.
+* :func:`split_cost` separates what is **measured** from what is **estimated**. A declined attempt is reported
+  in ``usage.iterations`` whether or not it is billed: under the provider's published rules a decline that
+  arrives before any output is billed only for some refusal categories (``BILLED_BEFORE_OUTPUT``), and an
+  attempt that produced output is always billed. Usage the provider reports for an attempt those rules bill
+  is measured spend. A decline before any output in another category, or one whose category is unknown, is
+  priced from its reported usage but kept apart as an estimate: the daily cap still counts it (an ambiguous
+  liability is never settled at zero), and it is never shown as measured spend.
 """
 
 from __future__ import annotations
@@ -41,6 +48,9 @@ PRICES: dict[str, Price] = {
     "claude-haiku-5-5": Price(input=0.10, output=0.50, cache_write=0.125, cache_read=0.01),
 }
 CONSERVATIVE = Price(input=10.00, output=50.00, cache_write=12.50, cache_read=1.00)
+# Refusal categories for which a decline before any output is billed, per the provider's published billing
+# rules ("How refusals are billed"). The list can change, which is why other declines are estimates, not zero.
+BILLED_BEFORE_OUTPUT = frozenset({"bio", "frontier_llm", "reasoning_extraction"})
 MAX_FALLBACKS = 3  # the API accepts one to three named fallback models
 
 
@@ -55,12 +65,23 @@ class Attempt:
     output_tokens: int = 0
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
+    declined: bool = False  # this attempt's model declined (a refusal), so another attempt or none followed
+    category: str | None = None  # the refusal category, when the response names it
+
+    @property
+    def billing_known(self) -> bool:
+        """Whether the published rules bill this attempt: any attempt that ran without declining or produced
+        output, and a decline before any output only in a billed category."""
+        return not self.declined or self.output_tokens > 0 or self.category in BILLED_BEFORE_OUTPUT
 
     def as_dict(self) -> dict[str, Any]:
-        return {"model": self.model, "type": self.kind, "input_tokens": self.input_tokens,
-                "output_tokens": self.output_tokens,
-                "cache_creation_input_tokens": self.cache_creation_input_tokens,
-                "cache_read_input_tokens": self.cache_read_input_tokens}
+        out: dict[str, Any] = {"model": self.model, "type": self.kind, "input_tokens": self.input_tokens,
+                               "output_tokens": self.output_tokens,
+                               "cache_creation_input_tokens": self.cache_creation_input_tokens,
+                               "cache_read_input_tokens": self.cache_read_input_tokens}
+        if self.declined:
+            out |= {"declined": True, "category": self.category}
+        return out
 
 
 @dataclass(frozen=True)
@@ -95,7 +116,8 @@ class Usage:
             Attempt(model=i.get("model"), kind=str(i.get("type") or "message"),
                     input_tokens=_count(i, "input_tokens"), output_tokens=_count(i, "output_tokens"),
                     cache_creation_input_tokens=_count(i, "cache_creation_input_tokens"),
-                    cache_read_input_tokens=_count(i, "cache_read_input_tokens"))
+                    cache_read_input_tokens=_count(i, "cache_read_input_tokens"),
+                    declined=bool(i.get("declined")), category=i.get("category"))
             for i in data.get("iterations") or [] if isinstance(i, dict))
         return cls(
             input_tokens=_count(data, "input_tokens"),
@@ -141,24 +163,51 @@ def _priced(p: Price, u: Usage | Attempt) -> float:
             + u.cache_creation_input_tokens * p.cache_write + u.cache_read_input_tokens * p.cache_read)
 
 
-def cost_usd(model: str, usage: Usage, candidates: tuple[str, ...] = ()) -> float:
-    """What one call cost. ``candidates`` are the attempts the request allowed, the requested model first.
+@dataclass(frozen=True)
+class CallCost:
+    """One call's cost: ``measured`` from provider-reported usage the published rules bill, ``estimated``
+    from reported usage whose billing is not established (a decline before any output in a category that
+    is not billed, or unknown). The daily cap charges ``total``; only ``measured`` is reported as spend."""
+
+    measured: float = 0.0
+    estimated: float = 0.0
+
+    @property
+    def total(self) -> float:
+        return round(self.measured + self.estimated, 6)
+
+
+def _attempt_usd(a: Attempt, model: str, candidates: tuple[str, ...], pool: tuple[str, ...]) -> float:
+    if a.model:
+        return _priced(price_for(a.model), a)
+    if a.kind == "message" and candidates and len(candidates) <= 2:
+        return _priced(price_for(candidates[0]), a)
+    return max(_priced(price_for(m), a) for m in pool)
+
+
+def split_cost(model: str, usage: Usage, candidates: tuple[str, ...] = ()) -> CallCost:
+    """What one call cost, measured and estimated apart. ``candidates`` are the attempts the request allowed,
+    the requested model first.
 
     Each reported attempt is priced at its own model. An attempt that names no model is the requested model's
     when it is a ``message`` attempt and the request named at most one fallback; otherwise it is priced at
     the most expensive of ``candidates`` and ``model``."""
     if not usage.attempts:
-        return round(_priced(price_for(model), usage) / 1_000_000, 6)
+        return CallCost(measured=round(_priced(price_for(model), usage) / 1_000_000, 6))
     pool = tuple(dict.fromkeys((model, *candidates)))
-    total = 0.0
+    measured = estimated = 0.0
     for a in usage.attempts:
-        if a.model:
-            total += _priced(price_for(a.model), a)
-        elif a.kind == "message" and candidates and len(candidates) <= 2:
-            total += _priced(price_for(candidates[0]), a)
+        usd = _attempt_usd(a, model, candidates, pool)
+        if a.billing_known:
+            measured += usd
         else:
-            total += max(_priced(price_for(m), a) for m in pool)
-    return round(total / 1_000_000, 6)
+            estimated += usd
+    return CallCost(measured=round(measured / 1_000_000, 6), estimated=round(estimated / 1_000_000, 6))
+
+
+def cost_usd(model: str, usage: Usage, candidates: tuple[str, ...] = ()) -> float:
+    """The most one call may have cost (measured plus estimated): what the daily cap charges."""
+    return split_cost(model, usage, candidates).total
 
 
 def worst_case_cost_usd(model: str, input_tokens: int, max_output_tokens: int) -> float:

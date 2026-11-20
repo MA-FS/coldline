@@ -18,9 +18,9 @@ from pydantic import BaseModel
 from coldline.contracts import Asset, AssetKind, PlantSystems, QAHold, Quality, Trend
 from coldline.sim import analysis
 
-EXCURSION_LIMIT_C = 5.0  # illustrative product air-temperature limit
-DIVERGENCE_WINDOW_MIN = 15  # matches the plant's "Δ > 2.0 °C (15 min)" alarm
-DIVERGENCE_LIMIT_C = 2.0  # mean probe gap above which the probes disagree (sim.analysis.is_diverging)
+EXCURSION_LIMIT_C = 5.0  # illustrative product air-temperature limit; a reading above it is out of limit
+DIVERGENCE_WINDOW_MIN = analysis.DIVERGENCE_WINDOW_MIN  # matches the plant's "Δ > 2.0 °C (15 min)" alarm
+DIVERGENCE_LIMIT_C = analysis.DIVERGENCE_LIMIT_C  # mean probe gap above which the probes disagree
 CLEARANCE_WINDOW_MIN = 30  # minutes of verified readings, all taken after the hold, before a release
 RECOVERY_MARGIN_C = 1.0  # peak minus latest that counts as "recovered"
 RISE_SIGNIFICANT_C = 1.5  # rise over the window that counts as an event
@@ -36,6 +36,9 @@ class Verdict(StrEnum):
     PROBES_DISAGREE = "probes_disagree"
     SINGLE_PROBE = "single_probe"
     INSUFFICIENT_DATA = "insufficient_data"
+    # Added after the others so stored approval versions (an index into this enum) keep their meaning.
+    EXCURSION_RECOVERED = "excursion_recovered"  # both probes went above the limit and are back within it
+    POSSIBLE_EXCURSION = "possible_excursion"  # one probe went above the limit and the other did not
 
 
 CONFIDENCE_CAP = {
@@ -45,8 +48,13 @@ CONFIDENCE_CAP = {
     Verdict.PROBES_DISAGREE: "unconfirmed",
     Verdict.SINGLE_PROBE: "unconfirmed",
     Verdict.INSUFFICIENT_DATA: "insufficient_data",
+    Verdict.EXCURSION_RECOVERED: "confirmed",
+    Verdict.POSSIBLE_EXCURSION: "unconfirmed",
 }
-UNCERTAIN = {Verdict.PROBES_DISAGREE, Verdict.SINGLE_PROBE, Verdict.INSUFFICIENT_DATA}
+UNCERTAIN = {Verdict.PROBES_DISAGREE, Verdict.SINGLE_PROBE, Verdict.INSUFFICIENT_DATA, Verdict.POSSIBLE_EXCURSION}
+# Verdicts under which nothing supports shipping the chiller's product until QA has looked at it: the
+# evidence is uncertain, or product was above the limit at some point in the window.
+NEEDS_QA = UNCERTAIN | {Verdict.EXCURSION_CONFIRMED, Verdict.EXCURSION_RECOVERED}
 DISAGREE_HEADLINE = "Probes disagree - cause unconfirmed."
 
 
@@ -204,28 +212,66 @@ def assess_chiller(systems: PlantSystems, asset_id: str, window_min: int = 60) -
             ),
         )
 
-    latest = [p.latest_c or 0.0 for p in probes]
-    peaks = [p.peak_c or 0.0 for p in probes]
-    starts = [p.start_c or 0.0 for p in probes]
-    if min(latest) > EXCURSION_LIMIT_C:
-        return Assessment(
-            **base,
-            verdict=Verdict.EXCURSION_CONFIRMED,
-            headline=f"Confirmed excursion - both {asset.name} probes above {EXCURSION_LIMIT_C:.1f} °C.",
-            recommendation="Keep product on hold until QA has assessed the time above limit.",
-        )
-    if max(peaks) - max(latest) >= RECOVERY_MARGIN_C and max(peaks) - min(starts) >= RISE_SIGNIFICANT_C:
-        return Assessment(
-            **base,
-            verdict=Verdict.TRANSIENT_RECOVERED,
-            headline=f"Transient rise in {asset.name} - recovered, probes agree.",
-            recommendation="No product action needed; keep monitoring.",
-        )
-    return Assessment(
-        **base,
-        verdict=Verdict.PROBES_AGREE,
-        headline=f"{asset.name} probes agree and are within limits.",
-    )
+    return Assessment(**base, **_limit_verdict(asset.name, probes))
+
+
+def _c(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.1f} °C"
+
+
+def _limit_verdict(name: str, probes: list[ProbeStatus]) -> dict:
+    """Verdict, headline and recommendation for two fresh probes that agree, judged probe by probe.
+
+    Every probe is compared with the limit on its own: one probe above the limit is never averaged or
+    outvoted away. Over the window (``peak_c``) and now (``latest_c``):
+
+    - every probe above the limit now: a confirmed excursion;
+    - every probe above the limit at some point: a confirmed excursion, still running if any probe is above
+      now, otherwise recovered (QA still has to assess the time above the limit);
+    - some probes above the limit and some not: the crossing is unconfirmed, which is treated as uncertain
+      evidence, never as "within limits";
+    - no probe above the limit: a transient if every probe that rose significantly has come back down,
+      otherwise the probes agree and are within limits.
+    """
+    limit = f"{EXCURSION_LIMIT_C:.1f} °C"
+    above_now = [p for p in probes if p.latest_c is not None and p.latest_c > EXCURSION_LIMIT_C]
+    crossed = [p for p in probes if p.peak_c is not None and p.peak_c > EXCURSION_LIMIT_C]
+    hold = "Keep product on hold until QA has assessed the time above limit."
+    if len(above_now) == len(probes):
+        return {"verdict": Verdict.EXCURSION_CONFIRMED,
+                "headline": f"Confirmed excursion - both {name} probes above {limit}.",
+                "recommendation": hold}
+    if len(crossed) == len(probes):
+        if above_now:
+            still = " and ".join(f"{p.tag} {_c(p.latest_c)}" for p in above_now)
+            return {"verdict": Verdict.EXCURSION_CONFIRMED,
+                    "headline": f"Confirmed excursion - both {name} probes went above {limit}; {still} still "
+                                "above it.",
+                    "recommendation": hold}
+        top = max(crossed, key=lambda p: p.peak_c or 0.0)
+        at = f" at {top.peak_ts:%H:%M}" if top.peak_ts else ""
+        return {"verdict": Verdict.EXCURSION_RECOVERED,
+                "headline": f"Excursion in {name} - both probes went above {limit} (peak {_c(top.peak_c)} on "
+                            f"{top.tag}{at}) and are back within it.",
+                "recommendation": hold}
+    if crossed:
+        hot = crossed[0]
+        cool = [p for p in probes if p not in crossed]
+        hot_text = (f"{hot.tag} reads {_c(hot.latest_c)}" if hot in above_now
+                    else f"{hot.tag} reached {_c(hot.peak_c)}")
+        cool_text = " and ".join(f"{p.tag} peaked at {_c(p.peak_c)}" for p in cool)
+        return {"verdict": Verdict.POSSIBLE_EXCURSION,
+                "headline": f"Possible excursion in {name} - {hot_text}, above {limit}, but {cool_text}; "
+                            "unconfirmed.",
+                "recommendation": (f"Treat {name} product as possibly above the limit: take a handheld reference "
+                                   f"reading in {name} and have QA assess it before releasing product.")}
+    risen = [p for p in probes if p.peak_c is not None and p.start_c is not None
+             and p.peak_c - p.start_c >= RISE_SIGNIFICANT_C]
+    if risen and all(p.peak_c - (p.latest_c or 0.0) >= RECOVERY_MARGIN_C for p in risen):  # type: ignore[operator]
+        return {"verdict": Verdict.TRANSIENT_RECOVERED,
+                "headline": f"Transient rise in {name} - recovered, probes agree.",
+                "recommendation": "No product action needed; keep monitoring."}
+    return {"verdict": Verdict.PROBES_AGREE, "headline": f"{name} probes agree and are within limits."}
 
 
 class GateResult(BaseModel):
@@ -246,6 +292,7 @@ _REQUIRED_WORDS = {
     Verdict.PROBES_DISAGREE: ("disagree", "unconfirmed"),
     Verdict.SINGLE_PROBE: ("unconfirmed", "cross"),
     Verdict.INSUFFICIENT_DATA: ("insufficient", "stale"),
+    Verdict.POSSIBLE_EXCURSION: ("unconfirmed", "possible"),
 }
 
 
@@ -259,8 +306,9 @@ def wording_consistent(text: str, verdict: Verdict) -> bool:
 
 
 # Most to least severe, for ordering headlines when several chillers were checked.
-_SEVERITY = (Verdict.INSUFFICIENT_DATA, Verdict.PROBES_DISAGREE, Verdict.SINGLE_PROBE,
-             Verdict.EXCURSION_CONFIRMED, Verdict.TRANSIENT_RECOVERED, Verdict.PROBES_AGREE)
+_SEVERITY = (Verdict.INSUFFICIENT_DATA, Verdict.PROBES_DISAGREE, Verdict.POSSIBLE_EXCURSION, Verdict.SINGLE_PROBE,
+             Verdict.EXCURSION_CONFIRMED, Verdict.EXCURSION_RECOVERED, Verdict.TRANSIENT_RECOVERED,
+             Verdict.PROBES_AGREE)
 NO_EVIDENCE_HEADLINE = "No chiller temperature evidence was checked in this run."
 
 
@@ -349,8 +397,9 @@ def release_clearance(systems: PlantSystems, lot_id: str, hold: QAHold,
                       window_min: int = CLEARANCE_WINDOW_MIN) -> Clearance:
     """Verified clearance for releasing ``hold`` on ``lot_id``: the lot's chiller has two independent probes,
     both fresh and good, sampled every minute for the last ``window_min`` minutes, every one of those minutes
-    after the hold was placed, agreeing (mean gap at or below the divergence limit) and at or below the product
-    limit throughout. Anything less fails with the reason. A model's account of a reading is never evidence."""
+    after the hold was placed, agreeing (the mean gap and the gap at every minute at or below the divergence
+    limit) and each probe at or below the product limit throughout. Anything less fails with the reason. A
+    model's account of a reading is never evidence."""
     lot = systems.get_lot(lot_id)
     zone = lot.zone_asset_id
 
@@ -386,12 +435,21 @@ def release_clearance(systems: PlantSystems, lot_id: str, hold: QAHold,
     if gap > DIVERGENCE_LIMIT_C:
         return fail(f"{a.tag} and {b.tag} disagree: mean gap {gap:.1f} °C over {window_min} min "
                     f"(limit {DIVERGENCE_LIMIT_C:.1f} °C)")
+    # The mean over the whole window can hide a recent disagreement (agreeing early, apart now), so every aligned
+    # minute is checked too. That also covers the plant's 15-minute divergence rule at the end of the window.
+    pairs = {p.ts: p.value_c for p in a.points if p.ts >= start}
+    worst_ts, worst_gap = max(((p.ts, abs((p.value_c or 0.0) - (pairs[p.ts] or 0.0)))
+                               for p in b.points if p.ts in pairs), key=lambda x: x[1])
+    if worst_gap > DIVERGENCE_LIMIT_C:
+        return fail(f"{a.tag} and {b.tag} differed by {worst_gap:.1f} °C at {worst_ts:%H:%M} in the last "
+                    f"{window_min} min (limit {DIVERGENCE_LIMIT_C:.1f} °C)")
     tag, peak = max(((t, max(v)) for t, v in values.items()), key=lambda x: x[1])
     if peak > EXCURSION_LIMIT_C:
         return fail(f"{tag} reached {peak:.1f} °C in the last {window_min} min (limit {EXCURSION_LIMIT_C:.1f} °C)")
     return Clearance(lot_id=lot.id, asset_id=zone, ok=True, lines=[
         (f"{a.tag} and {b.tag} fresh and sampled every minute from {start:%H:%M} to {end:%H:%M}, all after "
         f"{hold.id} was placed at {hold.placed_at:%H:%M}"),
-        f"Probes agree: mean gap {gap:.1f} °C over {window_min} min (limit {DIVERGENCE_LIMIT_C:.1f} °C)",
+        (f"Probes agree: mean gap {gap:.1f} °C, largest {worst_gap:.1f} °C, over {window_min} min "
+         f"(limit {DIVERGENCE_LIMIT_C:.1f} °C)"),
         f"Highest reading {peak:.1f} °C ({tag}); limit {EXCURSION_LIMIT_C:.1f} °C",
     ])

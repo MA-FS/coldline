@@ -118,7 +118,7 @@ GUARDRAIL step and an audit event. Unknown names are refused the same way, with 
 | The accepted handover is final: a tool call after it in the same model turn is refused, not run | `run_loop`, `refuse_after_handover` |
 | A run without an accepted handover is marked `incomplete`, never shown as a finished investigation | `loop.finalize` |
 | A run that read suspected injection text cannot propose hold releases, cannot use that text as justification, and must say so in its conclusion | `tools.py` |
-| A hold release is proposed only on verified clearance (both probes fresh, agreeing and within the limit for 30 min, all after the hold was placed), re-checked when QA decides | `evidence.release_clearance`, `propose_release_qa_hold` |
+| A hold release is proposed only on verified clearance (both probes fresh, agreeing at every minute and each within the limit for 30 min, all after the hold was placed), re-checked when QA decides | `evidence.release_clearance`, `propose_release_qa_hold` |
 | Approvals expire if their evidence changed (records, probe quality, verdict, incident) or the action's precondition no longer holds; execute exactly once; approve and decline need the same role; the agent cannot decide | `ApprovalStore` |
 | An upper bound on every call's cost (every attempt the request allows, fallback included) reserved and journalled before the call; settled at every attempt the response reports; unknown outcomes keep the reservation | `budget.py`, `loop.py`, `pricing.py` |
 | Trace headings are fixed labels and canonical ids; a name or title the model supplied is a labelled detail | `tools.py`, `records.py` |
@@ -128,13 +128,20 @@ GUARDRAIL step and an audit event. Unknown names are refused the same way, with 
 `assess_chiller` uses `coldline.sim.analysis` (the same freshness and divergence functions the plant mimic
 uses) and returns one verdict per chiller:
 
-| Verdict | When | Confidence cap | Headline |
+| Verdict | When | Confidence cap | Product |
 |---|---|---|---|
-| `insufficient_data` | a probe is stale or the samples are not comparable | `insufficient_data` | "Insufficient data - TT-402 stale; comparison withdrawn." |
-| `probes_disagree` | mean gap above 2 °C over 15 min | `unconfirmed` | "Probes disagree - cause unconfirmed." |
-| `excursion_confirmed` | both probes above the 5 °C illustrative limit | `confirmed` | model's wording |
-| `transient_recovered` | rose and came back with both probes agreeing | `confirmed` | model's wording |
-| `probes_agree` | otherwise | `confirmed` | model's wording |
+| `insufficient_data` | a probe is stale or the samples are not comparable | `insufficient_data` | check with QA |
+| `probes_disagree` | mean gap above 2 °C over 15 min | `unconfirmed` | check with QA |
+| `possible_excursion` | one probe above the 5 °C illustrative limit (now or earlier in the hour) and the other not | `unconfirmed` | check with QA |
+| `excursion_confirmed` | both probes above the limit now, or both went above it and one still is | `confirmed` | hold until QA assesses |
+| `excursion_recovered` | both probes went above the limit and are back within it | `confirmed` | hold until QA assesses |
+| `transient_recovered` | no probe above the limit; every probe that rose 1.5 °C came back down 1 °C | `confirmed` | no action |
+| `probes_agree` | otherwise | `confirmed` | no action |
+
+Every probe is compared with the limit on its own, so one probe above the limit is never outvoted by the
+other or hidden by an aggregate, and "within limits" is only said when neither probe went above it. A
+reading exactly at the limit is within it. The run's headline is always composed in code from the verdicts
+(`code_conclusion`), never from the model's wording.
 
 The verdict is returned to the model with every trend read (as `evidence_checks`) and recomputed at
 handover time.
@@ -184,7 +191,15 @@ target, so a copied old note always says it is not the current disposition. The 
 10 s, so a tab left open learns of later changes (or that its run is gone after a reset). The page always
 shows "Now on the plant" (current holds and proposals, from the same templates), including while an
 investigation is running or after one ended without a handover, and the sources table shows each record as it
-was when the note was accepted, with how it reads now where that differs.
+was when the note was accepted, with how it reads now where that differs (labelled "Now", and refreshed with
+the banner so that line never goes stale in an open tab).
+
+**A run's trace is a record too.** Each time a step cites records, `RunContext.record_evidence` stores how
+they read at that plant time (`run.extra["evidence_at"]`: title, detail, version, time and step). The run
+page's Evidence table shows those values, so an older run's trace never presents a later state (a hold
+placed by a later run, say) as its evidence. Where the plant now reads differently, a separate line says so,
+labelled "Now (HH:MM)"; a record the run did not describe is shown only on such a line. The probe chart beside
+it is labelled as current plant data, not as at the run.
 
 ## Approvals
 
@@ -204,7 +219,8 @@ of these. On approve, inside one sandbox transaction:
 3. Evidence re-read and the action's precondition re-checked: a new dispatch time must still be ahead, and a
    hold release must still have verified clearance (`evidence.release_clearance`: the lot's two probes fresh
    and good, sampled every minute for the last 30 min, all after the hold was placed, agreeing within 2 °C
-   and at or below the 5 °C limit throughout). What the model says it saw is never evidence; a release that
+   (on the mean and at every minute, so a recent disagreement cannot hide in the average) and each at or
+   below the 5 °C limit throughout). What the model says it saw is never evidence; a release that
    lacks clearance is refused before a proposal exists. Any change: `EXPIRED` with the reason in
    `approval.note`, audited, nothing runs. This is how "make the reference probe stale" or injecting a new
    fault retires proposals made on the earlier evidence.
@@ -212,9 +228,11 @@ of these. On approve, inside one sandbox transaction:
    one lock. A failure during execution (for example a work-order version conflict) also ends as `EXPIRED`.
 
 Each approval carries `change`, the exact change that runs on approval, composed in code (the dispatch date
-and plant-local time, the exact note to append, the hold to release), and `checks`, what code verified when
-it was proposed. Cards show both before the Approve button, with the model's `rationale` labelled
-"model-written, not verified" and kept apart; the compact cards on the overview link to the full proposal. A
+and plant-local time, the hold to release), `proposed_text`, any model-written text the change writes
+verbatim (an amendment's note), and `checks`, what code verified when it was proposed. Cards show all three
+before the Approve button: `change` under "Runs on approval (set in code)", which never holds model text,
+`proposed_text` under "Proposed by the agent (model-written, not verified)", and the model's `rationale`
+labelled the same way and kept apart; the compact cards on the overview link to the full proposal. A
 clock time that has already passed is scheduled for the next day, and the card then names the day.
 
 `revalidate_approvals()` runs step 3 for every pending approval without executing anything. It runs after
@@ -303,7 +321,13 @@ also read the declined attempt's partial output) at that model's cache-write rat
 limit. The SDK does not retry. After the call, every attempt the response reports in `usage.iterations` is
 settled at its own model's rate (the top-level usage covers only the attempt that answered); an attempt that
 names no model is the requested model's when only one fallback is named, and is otherwise priced at the most
-expensive model allowed. The reservation is written to the
+expensive model allowed. Spend is split in two (`pricing.split_cost`). **Measured** is the provider-reported
+usage of attempts the provider's published billing rules bill: every attempt that answered or produced
+output, and a decline before any output in a billed category (`BILLED_BEFORE_OUTPUT`: `bio`, `frontier_llm`,
+`reasoning_extraction`). **Estimated** is a decline before any output in any other category, or one whose
+category the response does not name (read from each `fallback` block's `trigger`, or `stop_details` for the
+last attempt): its usage is reported but its billing is not established, so the daily cap counts it and the
+trace and Impact page show it apart (`run.extra["estimated_usd"]`), never as measured spend. The reservation is written to the
 ledger before the call and settled afterwards: at the real cost, at zero for an API error, or kept in full
 (as `unreconciled_usd`) when the outcome is unknown (timeout, lost connection, cancellation). The ledger is
 `$COLDLINE_DATA_DIR/agent_spend.json`, replaced atomically on every change. A reservation left behind by a
@@ -321,9 +345,9 @@ started after midnight carries yesterday's open reservations into today as unrec
 address runs at most one live investigation at a time and commits at most `COLDLINE_ORIGIN_DAILY_USD_CAP`
 (US$1.00) of the day's spend (kept in memory; the journalled global cap is the backstop). A paid-mode
 setting that is not a finite number in range (for example a cap of `nan`) keeps its default and switches
-live runs off with a visible reason; replay is unaffected. Each run records its attempted calls (`live_calls`) and any spend whose
-outcome is unknown (`unreconciled_usd`); the Impact page shows the latter separately, never as a confirmed
-zero. The session limit is keyed by session id, the
+live runs off with a visible reason; replay is unaffected. Each run records its attempted calls (`live_calls`),
+estimated spend (`estimated_usd`) and any spend whose outcome is unknown (`unreconciled_usd`); the Impact page
+shows both apart from measured spend, never as a confirmed zero and never as measured. The session limit is keyed by session id, the
 per-address quota stops one visitor cycling cookies, and the daily cap is the backstop.
 
 Other settings: `ANTHROPIC_API_KEY`, `COLDLINE_MODEL` (default `claude-sonnet-5-5`), `COLDLINE_EFFORT`

@@ -46,9 +46,10 @@ from typing import TYPE_CHECKING, Any
 from coldline.agent.approvals import APPROVER_ROLES
 from coldline.agent.evidence import (
     CAUSE_CLAIM,
+    DIVERGENCE_WINDOW_MIN,
+    NEEDS_QA,
     UNCERTAIN,
     Assessment,
-    Verdict,
     code_conclusion,
     evidence_cap,
     extract_citations,
@@ -358,16 +359,15 @@ def lot_line(lot: Lot, hold_id: str | None, check: Assessment | None) -> str:
     if hold_id:
         return (f"{head}: on QA hold [{hold_id}]. Do not ship or load it until QA releases the hold; only QA "
                 "can release a hold.")
-    if check is not None and (check.verdict in UNCERTAIN or check.verdict == Verdict.EXCURSION_CONFIRMED):
+    if check is not None and check.verdict in NEEDS_QA:
         return (f"{head}: not on hold, but the {check.asset_id} evidence check is '{_verdict(check.verdict)}'. "
                 "Nothing in this run supports shipping it; check with QA before loading.")
     return f"{head}: not on hold."
 
 
 def required_followups(assessments: list[Assessment]) -> list[str]:
-    """Precautions the evidence itself requires (uncertain or excursion verdicts), in check order."""
-    needs = UNCERTAIN | {Verdict.EXCURSION_CONFIRMED}
-    return list(dict.fromkeys(a.recommendation for a in assessments if a.verdict in needs and a.recommendation))
+    """Precautions the evidence itself requires (uncertain verdicts, or product above the limit), in check order."""
+    return list(dict.fromkeys(a.recommendation for a in assessments if a.verdict in NEEDS_QA and a.recommendation))
 
 
 def disposition_lots(ctx: RunContext) -> list[tuple[Lot, QAHold | None]]:
@@ -412,7 +412,7 @@ def _cited_summary(a: Assessment) -> str:
         value = "n/a" if p.latest_c is None else f"{p.latest_c:.1f} °C"
         parts.append(f"[{p.tag}] {value} ({p.state})")
     if a.mean_gap_c is not None:
-        parts.append(f"mean gap {a.mean_gap_c:.1f} °C over 15 min")
+        parts.append(f"mean gap {a.mean_gap_c:.1f} °C over {DIVERGENCE_WINDOW_MIN} min")
     return f"{' · '.join(parts)} -> {_verdict(a.verdict)}"
 
 

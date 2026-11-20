@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from coldline.agent.evidence import EXCURSION_LIMIT_C
 from coldline.contracts import Quality
+from coldline.web import context, preview
 from coldline.web import fixtures as fx
-from coldline.web.charts import ChartEvent, Series, sparkline_svg, trend_svg
+from coldline.web.charts import PROBE_LIMIT_LINE, ChartEvent, Series, sparkline_svg, trend_svg
 from coldline.web.views import alarm_badge, cite_chips, mini_markdown, plant_view, trend_direction
 
 
@@ -100,3 +104,11 @@ def test_dock_follows_the_lot_under_investigation() -> None:
     p.inject(Scenario.DOOR_OPEN)  # no alarm any more: the latest investigation's chiller decides
     assert plant_view(p.snapshot(), run_zones=["CH4"]).due_lot.id == "L-2231"
     assert plant_view(p.snapshot()).due_lot.id == "L-2228"
+
+
+def test_the_probe_chart_draws_the_limit_the_evidence_checks_use() -> None:
+    assert PROBE_LIMIT_LINE == (EXCURSION_LIMIT_C, f"High {EXCURSION_LIMIT_C:.1f} °C")
+    sources = [Path(m.__file__).read_text() for m in (context, preview)]
+    assert not any('"High 4.0' in src or "limit=(4.0" in src for src in sources)
+    svg = str(trend_svg([fx.hero_trends()[0]], limit=PROBE_LIMIT_LINE))
+    assert f"High {EXCURSION_LIMIT_C:.1f}" in svg

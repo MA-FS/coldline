@@ -13,9 +13,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from coldline.agent.handover import Supersession
-from coldline.contracts import ApprovalStatus, Scenario
+from coldline.contracts import ApprovalStatus, RunTrace, Scenario
 from coldline.web import fixtures as fx
-from coldline.web.charts import ChartEvent, Series, trend_svg
+from coldline.web.charts import PROBE_LIMIT_LINE, ChartEvent, Series, trend_svg
 from coldline.web.render import base_context, templates
 from coldline.web.views import chiller_detail, citations, plant_view
 
@@ -151,17 +151,33 @@ def preview_run(request: Request, run_id: str) -> HTMLResponse:
             divergence=("TT-401", "TT-402", 2.0),
             y_min=1,
             y_max=7,
-            limit=(4.0, "High 4.0 °C"),
+            limit=PROBE_LIMIT_LINE,
             x_ticks=4,
             title="TT-401 vs TT-402, last 60 minutes",
         )
     ctx = {
         **_base("runs", f"Run {run.run_id}"),
         "run": run,
-        "evidence": fx.evidence(),
+        "evidence_rows": _evidence_rows(run),
+        "plant_now": fx.NOW,
         "evidence_chart": chart,
     }
     return templates.TemplateResponse(request, "pages/run_detail.html", ctx)
+
+
+def _evidence_rows(run: RunTrace) -> list[dict[str, Any]]:
+    """The fixed sample evidence, as the run read it (the preview plant never moves on)."""
+    known = fx.evidence()
+    ids = list(dict.fromkeys(i for s in run.steps for i in s.evidence_ids))
+    rows = []
+    for rid in ids:
+        ref = known.get(rid, {})
+        detail = ref.get("detail") or ""
+        rows.append({"id": rid, "title": ref.get("title") or "",
+                     "then": f"{detail} · v{ref['version']}" if detail and ref.get("version") else detail,
+                     "then_at": fx.NOW, "then_step": None, "now": "",
+                     "steps": [s.n for s in run.steps if rid in s.evidence_ids]})
+    return rows
 
 
 @router.get("/preview/approvals", response_class=HTMLResponse)
@@ -240,7 +256,7 @@ def styleguide(request: Request) -> HTMLResponse:
         events=[ChartEvent(fx.DOOR_OPEN, "Door 05:40")],
         y_min=1,
         y_max=7,
-        limit=(4.0, "High 4.0 °C"),
+        limit=PROBE_LIMIT_LINE,
     )
     ctx = {
         **_base("", "Styleguide"),
