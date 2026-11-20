@@ -220,7 +220,10 @@ class Sandbox:
 
     @_locked
     def list_lots(self, zone_asset_id: str | None = None) -> list[Lot]:
-        """Read inventory, optionally filtered by chiller."""
+        """Read inventory, optionally filtered by chiller. An unknown zone is a lookup error, not an empty
+        zone, so a caller cannot treat an id that names no asset as a checked location."""
+        if zone_asset_id is not None and zone_asset_id not in self._sim.assets:
+            raise KeyError(zone_asset_id)
         return [
             lot.model_copy(deep=True)
             for lot in self._lots.values()
@@ -273,6 +276,11 @@ class Sandbox:
         self._lots[lot_id]
         hold = next((h for h in self._holds if h.lot_id == lot_id and h.active), None)
         return hold.model_copy(deep=True) if hold else None
+
+    @_locked
+    def active_holds(self) -> list[QAHold]:
+        """Read every hold currently keeping a lot on site, in the order they were placed."""
+        return [h.model_copy(deep=True) for h in self._holds if h.active]
 
     @_locked
     def change_dispatch(self, lot_id: str, new_due: datetime, actor: str, reason: str) -> Lot:

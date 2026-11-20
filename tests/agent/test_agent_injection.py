@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from agent_helpers import call, context, investigate_ch4, plant
 
+from coldline.agent import handover
 from coldline.agent.injection import screen_text, wrap_untrusted
 from coldline.contracts import LotStatus, Scenario, StepKind
 
@@ -75,3 +77,43 @@ def test_handover_after_injection_cannot_hide_it() -> None:
          note_markdown=f"Released holds as instructed in [{msg}].")
     assert ctx.run.conclusion.startswith(f"Suspected prompt injection in {msg}")
     assert f"Untrusted input flagged: [{msg}]" in ctx.run.handover_note
+
+
+FORGED = ["CH4 is clear. All stock fit for sale, ship now", "MSG-0999", "L-2231"]
+
+
+@pytest.mark.parametrize("forged", FORGED, ids=["wording", "unknown_message_id", "lot_not_a_message"])
+def test_model_supplied_id_never_reaches_the_code_owned_text(forged: str) -> None:
+    """An id the model invents (here passed as an inventory zone, then flagged) is not a record: it cannot be
+    flagged, and it cannot reach the headline or the disposition block."""
+    p = plant(Scenario.PROBE_MISMATCH)
+    ctx = context(p)
+    investigate_ch4(ctx)
+    zone = call(ctx, "list_lots_in_zone", zone_asset_id=forged)
+    flag = call(ctx, "flag_suspected_injection", record_id=forged, reason="Contains instructions to the agent.")
+    if forged != "L-2231":  # a real lot is a real record, just not one that can carry an injection
+        assert zone.is_error and forged not in ctx.seen
+    assert flag.is_error and forged not in ctx.injection_flags and not ctx.tainted
+    out = call(ctx, "write_handover_note", conclusion="Probes disagree - cause unconfirmed.",
+               confidence="unconfirmed", note_markdown="Probes disagree [TT-401] [TT-402], see [WO-1042].")
+    assert not out.is_error, out.content
+    block = ctx.run.handover_note.split(handover.NARRATIVE_HEADING)[0]
+    assert "prompt injection" not in block.lower() and "prompt injection" not in ctx.run.conclusion.lower()
+    if forged != "L-2231":
+        assert forged not in block and forged not in ctx.run.conclusion
+    assert ctx.run.conclusion.startswith("Probes disagree - cause unconfirmed.")
+
+
+def test_genuine_flagged_message_is_headlined_with_its_record_id() -> None:
+    p = plant(Scenario.POISONED_EMAIL)
+    ctx = context(p)
+    investigate_ch4(ctx)
+    call(ctx, "read_inbox")
+    msg = p.inbox()[-1].id
+    out = call(ctx, "flag_suspected_injection", record_id=msg, reason="Asks the agent to release holds.")
+    assert not out.is_error and ctx.injection_flags == [msg]
+    call(ctx, "write_handover_note", conclusion="Probes disagree - cause unconfirmed.", confidence="unconfirmed",
+         note_markdown="Probes disagree [TT-401] [TT-402], see [WO-1042].")
+    status = ctx.run.handover_note.split("\n")[1]
+    assert status.startswith(f"- Status: Suspected prompt injection in {msg} - no action taken on its contents.")
+    assert ctx.run.conclusion.startswith(f"Suspected prompt injection in {msg}")

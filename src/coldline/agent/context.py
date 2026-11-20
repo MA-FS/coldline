@@ -11,7 +11,17 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from coldline.contracts import Asset, AuditEvent, PlantSystems, RunTrace, StepKind, Tier, TraceStep
+from coldline.contracts import (
+    Asset,
+    AuditEvent,
+    InboxMessage,
+    PlantSystems,
+    RunTrace,
+    StepKind,
+    Tier,
+    TraceStep,
+    WorkOrder,
+)
 
 if TYPE_CHECKING:
     from coldline.agent.approvals import ApprovalStore
@@ -45,7 +55,7 @@ class RunContext:
     systems: PlantSystems
     approvals: ApprovalStore
     scopes: frozenset[str] = AGENT_SCOPES
-    seen: set[str] = field(default_factory=set)  # record ids returned by tools in this run
+    seen: set[str] = field(default_factory=set)  # ids of plant records returned by tools in this run
     lookups: set[tuple[str, str]] = field(default_factory=set)  # ("trend" | "lots" | ..., asset_id)
     created: dict[str, str] = field(default_factory=dict)  # "hold:L-2231" -> "QH-0001"
     # Logical action -> "new" | "existing" | "reused": whether this run created the record or found it.
@@ -54,7 +64,7 @@ class RunContext:
     outcomes: dict[str, str] = field(default_factory=dict)
     records: dict[str, Any] = field(default_factory=dict)  # record id -> last model fetched
     assessments: dict[str, Assessment] = field(default_factory=dict)  # asset id -> latest check
-    injection_flags: list[str] = field(default_factory=list)  # untrusted record ids flagged
+    injection_flags: list[str] = field(default_factory=list)  # ids of inbox or ticket records flagged
     tainted: bool = False  # set once suspected injection text has been read
     handover_accepted: bool = False
     replay_baseline: dict[str, Any] | None = None  # the recording's handover facts, when replaying one
@@ -101,7 +111,20 @@ class RunContext:
         return asset is not None and asset.kind.value == "chiller"
 
     def see(self, *ids: str) -> None:
+        """Mark ids as returned by a tool. Callers pass only ids read off records the plant returned (never
+        an argument the model supplied), so ``seen`` is the set of records the run can cite."""
         self.seen.update(i for i in ids if i)
+
+    def flagged_records(self) -> list[str]:
+        """Canonical ids of the flagged records, for anything code composes. Only inbox messages and work
+        order tickets carry outside text, and only records a tool returned count: a flag on anything else
+        is never displayed."""
+        out = []
+        for i in self.injection_flags:
+            record = self.records.get(i)
+            if isinstance(record, (InboxMessage, WorkOrder)) and record.id not in out:
+                out.append(record.id)
+        return out
 
     # ------------------------------------------------------------------ audit
 

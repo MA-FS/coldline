@@ -143,11 +143,16 @@ The note has three sections, in this order:
 
 1. **Disposition (set in code from the plant records)**: the evidence headline and its confidence
    (`evidence.code_conclusion`), the fixed rule "Product disposition: QA decision. Held lots stay held until
-   QA releases them.", one line per lot the run looked at (on QA hold with the hold id and "do not ship or load it until QA releases the
-   hold", or not on hold, with a warning when that lot's evidence is uncertain or shows an excursion), the
+   QA releases them.", one line per lot the run looked at (on QA hold with the hold id and "do not ship or
+   load it until QA releases the hold", or not on hold, with a warning when that lot's evidence is uncertain
+   or shows an excursion), then one line for every other lot under an active QA hold (read from the plant's
+   hold records at handover time, so a lot held by an earlier investigation is never dropped), the
    proposals waiting with their approver, and the follow-ups the evidence requires. Every line is a
    template filled from evidence checks, lot records, holds and approvals; no model text reaches it on any
-   path, including confirmed evidence and runs with no chiller evidence. The agent never declares stock fit
+   path, including confirmed evidence and runs with no chiller evidence. Record ids come from plant
+   records, never from tool arguments: an unknown zone or asset is a lookup error rather than an empty
+   result, only ids read off returned records become citable, and an injection flag must resolve to an
+   inbox message or work order the run read (`RunContext.flagged_records`). The agent never declares stock fit
    for sale: release is QA's decision.
 2. **Agent narrative (model-written, not authoritative)**: the model's observations. Any sentence, bold
    lead or section that states a product, hold or approval decision is moved to the trace (section 1 says

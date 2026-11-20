@@ -4,11 +4,12 @@ The note ``write_handover_note`` accepts has three sections, in this order:
 
 1. **Disposition** (:func:`disposition_block`), composed in code from the sandbox at handover time: the
    evidence headline (:func:`~coldline.agent.evidence.code_conclusion`) and its confidence, the fixed rule
-   that product disposition is QA's decision, one line per lot the run looked at (on hold with the hold id
-   and "do not ship until QA releases it", or not on hold), the proposals waiting for a person, and the
-   follow-ups the evidence requires before any release. Every line is a template filled from the evidence
-   checks, lot records, holds and approvals; no model text reaches it on any path, so a copied note can
-   never clear a held lot or drop a precaution the evidence calls for.
+   that product disposition is QA's decision, one line per lot the run looked at and per lot the plant
+   holds (:func:`disposition_lots`: on hold with the hold id and "do not ship until QA releases it", or not
+   on hold), the proposals waiting for a person, and the follow-ups the evidence requires before any
+   release. Every line is a template filled from the evidence checks, lot records, holds, approvals and
+   canonical record ids; no model text reaches it on any path, so a copied note can never clear a held lot,
+   drop a lot an earlier investigation held, or drop a precaution the evidence calls for.
 2. **Agent narrative**, the model's own observations, labelled as model-written and not authoritative.
    :func:`sanitize` keeps out of it every sentence that states a product, hold or approval decision (those
    belong to section 1) and every sentence the checks contradict: a cause while the evidence is uncertain,
@@ -31,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from coldline.agent.approvals import APPROVER_ROLES
 from coldline.agent.evidence import CAUSE_CLAIM, UNCERTAIN, Assessment, Verdict, code_conclusion, evidence_cap
-from coldline.contracts import ApprovalStatus, InboxMessage, Lot, LotStatus, StepKind, Tier, WorkOrder
+from coldline.contracts import ApprovalStatus, InboxMessage, Lot, LotStatus, QAHold, StepKind, Tier, WorkOrder
 
 if TYPE_CHECKING:
     from coldline.agent.context import RunContext
@@ -330,19 +331,29 @@ def required_followups(assessments: list[Assessment]) -> list[str]:
     return list(dict.fromkeys(a.recommendation for a in assessments if a.verdict in needs and a.recommendation))
 
 
+def disposition_lots(ctx: RunContext) -> list[tuple[Lot, QAHold | None]]:
+    """The lots the disposition lists, read from the plant now: the lots this run looked at, then every
+    other lot under an active QA hold. A hold placed by an earlier investigation (or by a person) is still
+    in force, so a later handover must name it even when this run never looked that lot up."""
+    holds = {h.lot_id: h for h in ctx.systems.active_holds()}
+    out: list[tuple[Lot, QAHold | None]] = []
+    for lot_id in [*scope_lots(ctx), *sorted(set(holds) - set(scope_lots(ctx)))]:
+        try:
+            lot = ctx.systems.get_lot(lot_id)
+        except KeyError:
+            continue
+        out.append((lot, holds.get(lot.id)))
+    return out
+
+
 def disposition_block(ctx: RunContext, assessments: list[Assessment]) -> str:
     """Section 1, filled only from the evidence checks, lot records, holds, approvals and fixed templates."""
     checks = {a.asset_id: a for a in assessments}
-    status = f"- Status: {code_conclusion(assessments, ctx.injection_flags)}"
+    status = f"- Status: {code_conclusion(assessments, ctx.flagged_records())}"
     if assessments:
         status += f" Evidence confidence: {_verdict(evidence_cap(assessments))}."
     lines = [status, f"- {PRODUCT_DISPOSITION}"]
-    for lot_id in scope_lots(ctx):
-        try:
-            lot = ctx.systems.get_lot(lot_id)
-            hold = ctx.systems.active_hold(lot_id)
-        except KeyError:
-            continue
+    for lot, hold in disposition_lots(ctx):
         lines.append("- " + lot_line(lot, hold.id if hold else None, checks.get(lot.zone_asset_id)))
     pending = [a for a in ctx.run.approvals if a.status == ApprovalStatus.PENDING]
     if pending:
@@ -368,11 +379,12 @@ def _cited_summary(a: Assessment) -> str:
 
 def untrusted_line(ctx: RunContext) -> str:
     """What the run did with flagged text, derived from its recorded steps (not asserted)."""
-    flagged = set(ctx.injection_flags)
+    records = ctx.flagged_records()
+    flagged = set(records)
     cited = sorted({i for s in ctx.run.steps if s.ok and s.kind == StepKind.TOOL
                     and s.tier in (Tier.AUTO, Tier.APPROVE) and s.title != "flag_suspected_injection"
                     for i in s.evidence_ids if i in flagged})
-    ids = ", ".join(f"[{i}]" for i in ctx.injection_flags)
+    ids = ", ".join(f"[{i}]" for i in records)
     if cited:
         return f"Untrusted input flagged: {ids}. Actions in this run cited {', '.join(cited)}: review them."
     return (f"Untrusted input flagged: {ids}. Treated as data: no action in this run cited it, and release "
@@ -402,7 +414,7 @@ def verified_block(ctx: RunContext, assessments: list[Assessment], removed: list
     for a in ctx.run.approvals:
         if a.status != ApprovalStatus.PENDING:
             lines.append(f"- [{a.id}] {a.title}: {a.status.value}.")
-    if ctx.injection_flags:
+    if ctx.flagged_records():
         lines.append(f"- {untrusted_line(ctx)}")
     if removed:
         reasons = "; ".join(dict.fromkeys(r["reason"] for r in removed))

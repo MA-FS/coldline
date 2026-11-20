@@ -99,6 +99,24 @@ def run_scenario(c: TestClient, scenario: str, stale: bool = False):
     return run, page, c.app.state.runtime.sessions.get(_sid(c))
 
 
+DO_NOT_SHIP = "Do not ship or load it until QA releases the hold; only QA can release a hold."
+
+
+def expected_held_lines(plant) -> list[str]:
+    """One line per active QA hold in the plant, built from the lot and hold records."""
+    out = []
+    for lot in plant.list_lots():
+        hold = plant.active_hold(lot.id)
+        if hold is not None:
+            due = f"due {lot.dispatch_due:%H:%M}" if lot.dispatch_due else "no dispatch time"
+            out.append(f"{lot.id} ({lot.zone_asset_id}, {due}): on QA hold {hold.id}. {DO_NOT_SHIP}")
+    return sorted(out)
+
+
+def held_lines(block: list[str]) -> list[str]:
+    return sorted(x for x in block if "on QA hold" in x)
+
+
 CASES = [
     ("probe_mismatch", False, [DISAGREE_HEADLINE]),
     ("probe_mismatch", True, ["Insufficient data - TT-402 stale; comparison withdrawn."]),
@@ -131,16 +149,9 @@ def test_disposition_block_has_no_model_text(client: TestClient, scenario: str, 
     # Release is QA's decision, stated by the template on every path.
     assert "Product disposition: QA decision. Held lots stay held until QA releases them." in block
 
-    # Every held lot says do not ship, with its hold id.
-    for lot_line in (x for x in block if x.startswith("L-")):
-        lot_id = lot_line.split(" ", 1)[0]
-        hold = plant.active_hold(lot_id)
-        if hold is not None:
-            assert f"on QA hold {hold.id}. Do not ship or load it until QA releases the hold" in lot_line, lot_line
-    held = [lot.id for lot in plant.snapshot().lots if plant.active_hold(lot.id)]
-    for lot_id in held:
-        if lot_id in run.handover_note:
-            assert any(x.startswith(lot_id) and "Do not ship" in x for x in block), (lot_id, block)
+    # Every lot the plant holds is listed with its hold id and the do-not-ship line, and nothing else is
+    # described as held.
+    assert held_lines(block) == expected_held_lines(plant), block
 
     # Model prose lives below, in a section labelled as not authoritative (or is replaced by the replay
     # notice), and the model's own conclusion is kept in the trace.
@@ -162,3 +173,23 @@ def test_compressor_trip_with_the_audit_wording() -> None:
     assert len(held) == 2 and all("Do not ship or load it until QA releases the hold" in x for x in held), block
     text = "\n".join(clipboard(page)).lower()
     assert "fit for sale" not in text and "customer" not in text  # nor in the narrative below
+
+
+@pytest.mark.parametrize("order", [("compressor_trip", "probe_mismatch"), ("probe_mismatch", "compressor_trip")],
+                         ids=["trip_then_mismatch", "mismatch_then_trip"])
+def test_chained_investigations_keep_every_held_lot_in_the_copy(order: tuple[str, str]) -> None:
+    """A later investigation's handover still names every lot the plant holds, including lots it did not
+    look up itself (the trip holds L-2231 and L-2232; the mismatch run only looks at Chiller 4)."""
+    with make_client() as c:
+        first, _, plant = run_scenario(c, order[0])
+        second, page, plant = run_scenario(c, order[1])
+        assert second.run_id != first.run_id
+        assert c.get(f"/handover?run_id={first.run_id}").status_code == 200
+    expected = expected_held_lines(plant)
+    assert len(expected) >= 2, expected  # the chain leaves both Chiller 4 and Chiller 5 lots on hold
+    block = disposition(clipboard(page))
+    assert held_lines(block) == expected, block
+    # The current investigation's own lots come first.
+    lots = [x.split(" ", 1)[0] for x in block if x.startswith("L-")]
+    own = sorted(second.extra["handover_facts"]["lots"])
+    assert own and lots[:len(own)] == own, (lots, own)

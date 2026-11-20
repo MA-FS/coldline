@@ -50,7 +50,8 @@ def resolve_placeholders(obj: Any, ctx: RunContext) -> Any:
     def sub(match: re.Match[str]) -> str:
         key = match.group(1)
         if key == "flagged":
-            value = ctx.injection_flags[0] if ctx.injection_flags else None
+            flagged = ctx.flagged_records()
+            value = flagged[0] if flagged else None
         elif key.startswith("alarm:"):
             value = _alarm_on(ctx, key.split(":", 1)[1])
         else:
