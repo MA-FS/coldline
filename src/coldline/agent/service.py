@@ -52,6 +52,7 @@ Mode = Literal["replay", "live"]
 log = logging.getLogger(__name__)
 EVAL_RESULTS_PATH = Path(__file__).parent / "data" / "eval_results.json"
 MAX_RUNS_PER_SESSION = 25
+CONFIG_REFUSAL = "Live runs are disabled: a paid-mode setting is invalid. Recorded runs still work."
 
 
 @dataclass
@@ -99,17 +100,22 @@ class AgentService:
         self.registry = ToolRegistry()
         self.recordings = recordings or RecordingLibrary()
         state_path = Path(s.data_dir) / "agent_spend.json" if s.data_dir else None
-        self.billable_models = permitted_models(s.model, s.server_fallback)
+        # Every attempt one live request may bill: the model, then each named server-side fallback.
+        self.billable_models = permitted_models(s.model, s.fallbacks)
         # Admission needs room for at least the first call of a run: prompt, tools and a typical trigger.
         first_call = input_token_bound(self.registry.definitions(), [{"role": "user", "content": "x" * 1500}])
         self.budget = budget or BudgetGuard(
             daily_cap_usd=s.daily_usd_cap,
             session_runs_per_window=s.session_runs_per_hour,
             origin_runs_per_day=s.origin_runs_per_day,
+            origin_concurrent=s.origin_concurrent_live,
+            origin_daily_usd_cap=s.origin_daily_usd_cap,
             max_concurrent=s.max_concurrent_live,
             min_call_reserve_usd=reservation_usd(self.billable_models, first_call, s.max_tokens_per_call),
             state_path=state_path,
         )
+        for error in s.config_errors:
+            log.error("live runs disabled: %s", error)
         self._live_client_factory = live_client_factory or AnthropicModelClient
         self._live_client: ModelClient | None = None
         self._sessions: dict[str, _Session] = {}
@@ -153,8 +159,11 @@ class AgentService:
     # ------------------------------------------------------------------ runs
 
     def live_status(self, session_id: str, origin: str = "") -> BudgetStatus:
-        return self.budget.status(session_id, live_enabled=self.settings.live_enabled,
-                                  api_key_present=self.settings.api_key_present, origin=origin)
+        status = self.budget.status(session_id, live_enabled=self.settings.live_enabled,
+                                    api_key_present=self.settings.api_key_present, origin=origin)
+        if self.settings.config_errors and self.settings.live_enabled:
+            status = status.model_copy(update={"live_available": False, "reason": CONFIG_REFUSAL})
+        return status
 
     async def start_run(
         self,
@@ -301,6 +310,8 @@ class AgentService:
     def _live_refusal(self, session_id: str, origin: str) -> str:
         if not self.settings.live_enabled:
             return "Live runs are switched off"
+        if self.settings.config_errors:
+            return CONFIG_REFUSAL
         if not self.settings.api_key_present:
             return "No model API key is configured"
         return self.budget.admit(session_id, origin=origin)
@@ -316,11 +327,11 @@ class AgentService:
                 fallback = self._live_refusal(run.session_id, origin)
                 if not fallback:
                     try:
-                        await self._run_live(ctx)
+                        await self._run_live(ctx, origin)
                     except LiveRunAborted as exc:
                         fallback = exc.reason
                     finally:
-                        self.budget.finish()
+                        self.budget.finish(origin)
                     if not fallback:
                         return
                 run.extra["fallback_reason"] = fallback
@@ -356,12 +367,13 @@ class AgentService:
             state.done = True
             state.wake()
 
-    async def _run_live(self, ctx: RunContext) -> None:
+    async def _run_live(self, ctx: RunContext, origin: str = "") -> None:
         if self._live_client is None:
             self._live_client = self._live_client_factory(self.settings)
         ctx.run.mode = "live"
         async for _ in run_loop(ctx, self._live_client, self.registry, LoopLimits.from_settings(self.settings),
-                                budget=self.budget, record_turns=True, billable_models=self.billable_models):
+                                budget=self.budget, record_turns=True, billable_models=self.billable_models,
+                                origin=origin):
             pass
         finalize(ctx)
 

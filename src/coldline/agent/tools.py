@@ -35,6 +35,7 @@ from coldline.agent.evidence import (
     gate_conclusion,
     probe_status,
     probe_tags,
+    release_clearance,
 )
 from coldline.agent.injection import screen_text, wrap_untrusted
 from coldline.contracts import (
@@ -267,7 +268,7 @@ def get_sensor_trend(ctx: RunContext, args: TrendIn) -> ToolResult:
     return ToolResult(
         data={"trends": data, "evidence_checks": checks},
         evidence_ids=[t.tag for t in trends],
-        summary=f"Read {args.window_min} min of history for {', '.join(args.tags)}",
+        summary=f"Read {args.window_min} min of history for {', '.join(t.tag for t in trends)}",
         preview=" · ".join(previews),
         followups=followups,
     )
@@ -478,12 +479,12 @@ def place_qa_hold(ctx: RunContext, args: HoldIn) -> ToolResult:
     ctx.created[f"hold:{lot.id}"] = hold.id
     ctx.outcomes.setdefault(f"hold:{lot.id}", "existing" if already else "new")
     ctx.see(hold.id)
-    summary = (f"{args.lot_id} already on QA hold {hold.id}" if already
-               else f"Precautionary QA hold {hold.id} placed on {args.lot_id}")
-    return ToolResult(data={"hold_id": hold.id, "lot_id": args.lot_id, "already_on_hold": already,
+    summary = (f"{lot.id} already on QA hold {hold.id}" if already
+               else f"Precautionary QA hold {hold.id} placed on {lot.id}")
+    return ToolResult(data={"hold_id": hold.id, "lot_id": lot.id, "already_on_hold": already,
                             "note": "QA can release this hold; the agent cannot."},
-                      evidence_ids=[hold.id, args.lot_id, *args.evidence_ids], summary=summary,
-                      preview=f"{hold.id} active on {args.lot_id}")
+                      evidence_ids=[hold.id, lot.id, *args.evidence_ids], summary=summary,
+                      preview=f"{hold.id} active on {lot.id}")
 
 
 class CreateWorkOrderIn(_In):
@@ -524,9 +525,10 @@ def create_work_order(ctx: RunContext, args: CreateWorkOrderIn) -> ToolResult:
     ctx.outcomes[key] = "new"
     ctx.records[wo.id] = wo
     ctx.see(wo.id)
+    # The step heading is code-set (record id, priority, asset); the title the model wrote is a labelled detail.
     return ToolResult(data={"wo_id": wo.id, "status": wo.status, "priority": wo.priority},
-                      evidence_ids=[wo.id, asset_id], summary=f"Raised {wo.id} (P{wo.priority}): {wo.title}",
-                      preview=f"{wo.id} open P{wo.priority} on {asset_id}")
+                      evidence_ids=[wo.id, asset_id], summary=f"Raised {wo.id} (P{wo.priority}) on {asset_id}",
+                      preview=f"{wo.id} open P{wo.priority} on {asset_id} · title (agent-written): {wo.title}")
 
 
 class PermitIn(_In):
@@ -633,6 +635,8 @@ def write_handover_note(ctx: RunContext, args: HandoverIn) -> ToolResult:
     run.extra["gate"] = {"model_conclusion": gate.model_conclusion, "model_confidence": gate.model_confidence,
                          "cap": gate.cap, "rewritten": gate.rewritten, "removed": removed}
     run.extra["handover_facts"] = facts
+    # The note is a snapshot: store what it was composed from, so a later reader can see what changed since.
+    run.extra["handover_snapshot"] = handover.capture(ctx, note)
     if diffs:
         run.extra["replay_divergence"] = diffs
     ctx.handover_accepted = True
@@ -704,6 +708,8 @@ def propose_work_order_amendment(ctx: RunContext, args: AmendIn) -> Proposal:
         action="amend_work_order",
         title=f"Add evidence note to {wo.id}",
         rationale=args.rationale,
+        change=[(f"Append this note to {wo.id} ({wo.asset_id}, version {wo.version}), followed by the run id and "
+                "the name of the person who approves:"), args.note],
         payload={"wo_id": wo.id, "asset_id": wo.asset_id, "note": args.note},
         evidence_ids=list(dict.fromkeys([wo.id, *args.evidence_ids])),
         sources=[Source("work_order", wo.id, wo.asset_id), *_evidence_sources(ctx, wo.asset_id, args.evidence_ids)],
@@ -719,13 +725,23 @@ class DispatchIn(_In):
 
 
 def _parse_due(raw: str, ref: datetime, now: datetime) -> datetime:
+    """A dispatch time in plant local time. 'HH:MM' is on the lot's current dispatch day, or the next day if
+    that time has passed; ISO 8601 with an offset is converted to plant local time."""
     raw = raw.strip()
     if re.fullmatch(r"\d{1,2}:\d{2}", raw):
         hour, minute = (int(x) for x in raw.split(":"))
         due = ref.replace(hour=hour, minute=minute, second=0, microsecond=0)
         return due + timedelta(days=1) if due <= now else due
     due = datetime.fromisoformat(raw)
-    return due.replace(tzinfo=now.tzinfo) if due.tzinfo is None else due
+    return due.replace(tzinfo=now.tzinfo) if due.tzinfo is None else due.astimezone(now.tzinfo)
+
+
+def _when(dt: datetime | None) -> str:
+    """Date and plant-local time, so a card can never show a bare clock time that is really tomorrow."""
+    if dt is None:
+        return "unscheduled"
+    offset = dt.strftime("%z")
+    return f"{dt:%a %-d %b %H:%M} (plant time, UTC{offset[:3]}:{offset[3:]})"
 
 
 def propose_dispatch_change(ctx: RunContext, args: DispatchIn) -> Proposal:
@@ -751,10 +767,15 @@ def propose_dispatch_change(ctx: RunContext, args: DispatchIn) -> Proposal:
                 f"{a.headline} {a.recommendation}",
             )
     old = lot.dispatch_due
+    # Same day: the short form. Another day: the title names the day, so the clock time cannot mislead.
+    day = (old or now).date()
+    target = _hm(new_due) if new_due.date() == day else f"{new_due:%a %-d %b} {_hm(new_due)}"
     return Proposal(
         action="change_dispatch",
-        title=f"Move {lot.id} dispatch {_hm(old) or 'unscheduled'} -> {_hm(new_due)}",
+        title=f"Move {lot.id} dispatch {_hm(old) or 'unscheduled'} -> {target}",
         rationale=args.reason,
+        change=[f"Change {lot.id} dispatch from {_when(old)} to {_when(new_due)}."
+                + (" That is a later day than the current dispatch." if new_due.date() != day else "")],
         payload={"lot_id": lot.id, "old_due": old.isoformat() if old else None, "new_due": new_due.isoformat(),
                  "reason": args.reason},
         evidence_ids=list(dict.fromkeys([lot.id, *args.evidence_ids])),
@@ -784,10 +805,19 @@ def propose_release_qa_hold(ctx: RunContext, args: ReleaseIn) -> Proposal:
     if lot.status != LotStatus.HOLD or hold is None:
         raise Refusal("Refused: lot not on hold", f"{lot.id} is {lot.status.value}.")
     ctx.see(hold.id)
+    # The precondition is computed from the historian, not from anything the model says it saw: a release is
+    # only ever put to QA on verified clearance, and the same check runs again when QA decides.
+    clearance = release_clearance(ctx.systems, lot.id, hold)
+    if not clearance.ok:
+        raise Refusal("Evidence precondition failed: release needs verified clearance",
+                      f"{clearance.reason}. A release can only be proposed on verified clearance; QA can still "
+                      "check the product and release the hold themselves.")
     return Proposal(
         action="release_qa_hold",
         title=f"Release QA hold {hold.id} on {lot.id}",
         rationale=args.rationale,
+        change=[f"Release QA hold {hold.id} on {lot.id} ({lot.zone_asset_id}); {lot.id} becomes ready to ship."],
+        checks=clearance.lines,
         payload={"lot_id": lot.id, "hold_id": hold.id},
         evidence_ids=list(dict.fromkeys([lot.id, hold.id, *args.evidence_ids])),
         sources=[Source("lot", lot.id), Source("hold", hold.id, lot.id),
@@ -903,15 +933,17 @@ class ToolRegistry:
         raw = raw_input if isinstance(raw_input, dict) else {"_raw": raw_input}
         tool = self.tools.get(name)
 
-        def refuse(title: str, reason: str, tier: Tier | None) -> ToolOutcome:
-            step = ctx.guardrail(title, reason, tier=tier, args=raw)
+        def refuse(title: str, reason: str, tier: Tier | None, args: dict | None = None) -> ToolOutcome:
+            step = ctx.guardrail(title, reason, tier=tier, args=args if args is not None else raw)
             ctx.audit("guardrail_refusal", name, f"{title}: {reason}")
             return ToolOutcome([step], _dump({"ok": False, "refused_by": "code", "reason": reason}), True)
 
         if tool is None:
+            # The heading is a fixed label: the name the model asked for is model text, so it goes in the
+            # details (the reason and the recorded arguments), never in the title.
             never, reason = classify_unknown(name, list(self.tools))
-            title = f"Refused: {name} is a NEVER-tier action" if never else f"Refused: unknown tool {name!r}"
-            return refuse(title, reason, Tier.NEVER if never else None)
+            title = "Refused: NEVER-tier action" if never else "Refused: unknown tool"
+            return refuse(title, reason, Tier.NEVER if never else None, args={"tool": name, **raw})
         if tool.required_role not in ctx.scopes:
             return refuse(f"Refused: agent lacks scope {tool.required_role}",
                           f"{name} requires {tool.required_role}, which this agent identity does not hold.",
@@ -947,6 +979,19 @@ class ToolRegistry:
                                   evidence_ids=f.evidence_ids))
         payload = {"ok": True, "tier": tool.tier.value, "data": result.data, "evidence_ids": result.evidence_ids}
         return ToolOutcome(steps, _dump(payload), False)
+
+    def refuse_after_handover(self, ctx: RunContext, name: str, raw_input: Any) -> ToolOutcome:
+        """A call in the same model turn as the accepted handover, after it. The note is final, so the call is
+        not run: nothing may change the records it states."""
+        raw = raw_input if isinstance(raw_input, dict) else {"_raw": raw_input}
+        tool = self.tools.get(name)
+        label = name if tool is not None else "a tool that does not exist"
+        reason = (f"The run already ended with its accepted handover, so {label} was not run. The note is final "
+                  "and nothing after it may change the records it states.")
+        step = ctx.guardrail("Refused: call after the accepted handover", reason,
+                             tier=tool.tier if tool else None, args={"tool": name, **raw})
+        ctx.audit("guardrail_refusal", name, f"call after the accepted handover: {reason}")
+        return ToolOutcome([step], _dump({"ok": False, "refused_by": "code", "reason": reason}), True)
 
     @staticmethod
     def _queue(ctx: RunContext, tool: Tool, proposal: Proposal) -> ToolResult:

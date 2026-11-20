@@ -131,7 +131,7 @@ All pages extend `base.html` and need `render.base_context(active, now, mode=, p
 | `pages/audit.html` | `events` |
 | `pages/evals.html` | `evals` (list of {scenario, case, checks[{name, passed}], passed, cost_usd, latency_ms, run_id, note}) |
 | `pages/impact.html` | `kpis`, `assumptions` |
-| `pages/handover.html` | `run`, `evidence` |
+| `pages/handover.html` | `run`, `latest`, `sup` (`handover.Supersession`), `current`, `plant_now`, `sources` |
 | `pages/how_it_works.html` | none |
 
 ## HTMX regions and endpoints

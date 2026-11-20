@@ -55,8 +55,27 @@
     <span>{{ a.id }}</span><span>{{ a.action }}</span><span>tier APPROVE</span>
     <a href="{{ prefix }}/runs/{{ a.run_id }}">{{ a.run_id }}</a>
   </div>
-  {% if not compact %}<p class="approval-rationale">{{ a.rationale }}</p>{% endif %}
+  {#- What runs is stated by code before any button: the exact change (dispatch date and plant time, the exact
+      note), then what code verified. The model's rationale is labelled and kept apart. -#}
+  {% if a.change %}
+  <div class="approval-change">
+    <div class="approval-label">Runs on approval (set in code)</div>
+    <p class="approval-change-line">{{ a.change[0] }}</p>
+    {% for line in a.change[1:] %}<blockquote class="approval-quote">{{ line }}</blockquote>{% endfor %}
+  </div>
+  {% endif %}
+  {% if a.checks %}
+  <div class="approval-checks">
+    <div class="approval-label">Verified in code · checked again when you decide</div>
+    <ul>{% for c in a.checks %}<li>{{ c }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  {% if not compact %}
+  <div class="approval-label">Agent rationale (model-written, not verified)</div>
+  <p class="approval-rationale">{{ a.rationale }}</p>
+  {% endif %}
   {% if a.evidence_ids %}<div>{{ ui.ev_list(a.evidence_ids) }}</div>{% endif %}
+  {% if compact %}<a class="approval-more" href="{{ prefix }}/approvals#approval-{{ a.id }}">Full proposal: rationale, evidence and what it binds to</a>{% endif %}
   {% if not compact %}
   <div class="approval-payload">{% for k, v in a.payload.items() %}{{ k }}: {{ v }}
 {% endfor %}{% if a.source_versions %}<span style="color: var(--text-3)">binds to: {% for k, v in a.source_versions.items() %}{{ k }} v{{ v }}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}</div>

@@ -10,16 +10,18 @@ All temperature limits here are illustrative for the demo, not regulatory values
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from pydantic import BaseModel
 
-from coldline.contracts import Asset, PlantSystems, Quality, Trend
+from coldline.contracts import Asset, AssetKind, PlantSystems, QAHold, Quality, Trend
 from coldline.sim import analysis
 
 EXCURSION_LIMIT_C = 5.0  # illustrative product air-temperature limit
 DIVERGENCE_WINDOW_MIN = 15  # matches the plant's "Δ > 2.0 °C (15 min)" alarm
+DIVERGENCE_LIMIT_C = 2.0  # mean probe gap above which the probes disagree (sim.analysis.is_diverging)
+CLEARANCE_WINDOW_MIN = 30  # minutes of verified readings, all taken after the hold, before a release
 RECOVERY_MARGIN_C = 1.0  # peak minus latest that counts as "recovered"
 RISE_SIGNIFICANT_C = 1.5  # rise over the window that counts as an event
 
@@ -324,3 +326,72 @@ def extract_citations(markdown: str) -> list[str]:
         if match.group(1) not in seen:
             seen.append(match.group(1))
     return seen
+
+
+# --------------------------------------------------------------------------- release clearance
+
+
+class Clearance(BaseModel):
+    """Whether code can verify that a held lot's temperature evidence supports releasing it.
+
+    ``reason`` says why not; ``lines`` are what was verified, shown with the proposal and re-checked when QA
+    decides. It is a precondition for *proposing* a release, never a release: QA still decides, and remains
+    accountable for anything code cannot see (a hold placed for a reason other than temperature)."""
+
+    lot_id: str
+    asset_id: str
+    ok: bool
+    reason: str = ""
+    lines: list[str] = []
+
+
+def release_clearance(systems: PlantSystems, lot_id: str, hold: QAHold,
+                      window_min: int = CLEARANCE_WINDOW_MIN) -> Clearance:
+    """Verified clearance for releasing ``hold`` on ``lot_id``: the lot's chiller has two independent probes,
+    both fresh and good, sampled every minute for the last ``window_min`` minutes, every one of those minutes
+    after the hold was placed, agreeing (mean gap at or below the divergence limit) and at or below the product
+    limit throughout. Anything less fails with the reason. A model's account of a reading is never evidence."""
+    lot = systems.get_lot(lot_id)
+    zone = lot.zone_asset_id
+
+    def fail(reason: str) -> Clearance:
+        return Clearance(lot_id=lot.id, asset_id=zone, ok=False, reason=reason)
+
+    try:
+        asset = systems.get_asset(zone)
+    except KeyError:
+        return fail(f"{lot.id} is stored in {zone}, which has no plant record")
+    tags = probe_tags(asset)
+    if asset.kind != AssetKind.CHILLER or len(tags) < 2:
+        return fail(f"{asset.name} has no independent probe pair, so code cannot verify the product temperature")
+    now = systems.now()
+    held_min = (now - hold.placed_at).total_seconds() / 60
+    if held_min < window_min:
+        return fail(f"{hold.id} was placed {held_min:.0f} min ago; a release needs {window_min} min of readings "
+                    "taken after the hold")
+    a, b = systems.get_trend(tags, window_min)
+    for trend in (a, b):
+        quality = analysis.freshness(trend.points[-1], now) if trend.points else Quality.BAD
+        if quality != Quality.GOOD:
+            return fail(f"{trend.tag} is {quality.value}; a release needs fresh readings from both probes")
+    gap = analysis.divergence(a, b, window_min)
+    if gap is None:
+        return fail(f"{a.tag} and {b.tag} do not have a complete, synchronous reading for every minute of the "
+                    f"last {window_min} min")
+    end = max(a.points[-1].ts, b.points[-1].ts)
+    start = end - timedelta(minutes=window_min - 1)
+    if start < hold.placed_at:
+        return fail(f"the last {window_min} min of readings start before {hold.id} was placed")
+    values = {t.tag: [p.value_c for p in t.points if p.ts >= start and p.value_c is not None] for t in (a, b)}
+    if gap > DIVERGENCE_LIMIT_C:
+        return fail(f"{a.tag} and {b.tag} disagree: mean gap {gap:.1f} °C over {window_min} min "
+                    f"(limit {DIVERGENCE_LIMIT_C:.1f} °C)")
+    tag, peak = max(((t, max(v)) for t, v in values.items()), key=lambda x: x[1])
+    if peak > EXCURSION_LIMIT_C:
+        return fail(f"{tag} reached {peak:.1f} °C in the last {window_min} min (limit {EXCURSION_LIMIT_C:.1f} °C)")
+    return Clearance(lot_id=lot.id, asset_id=zone, ok=True, lines=[
+        (f"{a.tag} and {b.tag} fresh and sampled every minute from {start:%H:%M} to {end:%H:%M}, all after "
+        f"{hold.id} was placed at {hold.placed_at:%H:%M}"),
+        f"Probes agree: mean gap {gap:.1f} °C over {window_min} min (limit {DIVERGENCE_LIMIT_C:.1f} °C)",
+        f"Highest reading {peak:.1f} °C ({tag}); limit {EXCURSION_LIMIT_C:.1f} °C",
+    ])

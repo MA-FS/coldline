@@ -96,6 +96,25 @@
     }, 150);
   }
   document.body.addEventListener("plant-changed", function () { refreshShell(); refreshRegion(); });
+
+  // The mimic refreshes itself every 5 s and carries the server's state revision (faults, resets, the latest
+  // run, proposal status, holds, probe freshness). If another tab changed any of that, the rest of this page
+  // (conclusion, alarms, chiller detail, approval cards) is out of date: disable its decision buttons at once
+  // and re-render the whole overview, so one investigation's decisions never sit beside another's plant.
+  document.body.addEventListener("htmx:afterSettle", function () {
+    var ov = document.getElementById("overview"), mimic = document.getElementById("mimic");
+    if (!ov || !mimic || !window.htmx) return;
+    var rev = mimic.getAttribute("data-rev");
+    if (!rev || rev === ov.getAttribute("data-rev") || ov.getAttribute("data-refreshing") === rev) return;
+    ov.setAttribute("data-refreshing", rev);
+    ov.querySelectorAll(".approval-actions button").forEach(function (b) {
+      b.disabled = true; b.title = "The plant changed in another tab; refreshing";
+    });
+    var panel = document.getElementById("agent-panel");
+    if (panel) panel.setAttribute("aria-busy", "true");
+    htmx.ajax("GET", "/", { target: "#overview", select: "#overview", swap: "outerHTML" });
+    refreshShell();
+  });
   document.body.addEventListener("htmx:sseMessage", function (e) {
     var data = e.detail && e.detail.data;
     if (typeof data === "string" && data.indexOf("hx-swap-oob") >= 0) refreshShell();

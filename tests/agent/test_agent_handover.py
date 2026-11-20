@@ -44,8 +44,10 @@ def test_bold_lead_cannot_clear_a_held_lot_and_precautions_survive() -> None:
     text = copied(ctx.run.handover_note)
     hold = p.active_hold("L-2231")
     assert "can ship" not in text.lower()
-    # The copy opens with the code-set disposition, which states the hold and the precaution.
-    assert text.startswith("Disposition (set in code from the plant records)")
+    # The copy opens with its snapshot label and the code-set disposition, which states the hold and the
+    # precaution.
+    assert text.startswith(f"Handover {ctx.run.run_id} · snapshot as at Sat 21 Nov 2026, ")
+    assert text.split("(plant time) ", 1)[1].startswith("Disposition (set in code from the plant records)")
     assert f"L-2231 (CH4, due 06:15): on QA hold {hold.id}" in text
     assert "Do not ship or load it until QA releases the hold; only QA can release a hold." in text
     assert text.index("on QA hold") < text.index("Agent narrative (model-written, not authoritative)")
@@ -135,3 +137,73 @@ def test_a_fact_missing_from_this_run_is_a_difference() -> None:
 def test_equal_facts_have_no_differences_and_any_other_change_has_one() -> None:
     assert handover.differences(_facts(), _facts(), set()) == []
     assert handover.differences(_facts(extra=1), _facts(), set()) == ["the recorded facts differ from this run's"]
+
+
+# --------------------------------------------------------------------------- the accepted handover is final (M1)
+
+
+async def _scripted(p, *turns):
+    from agent_helpers import REGISTRY
+
+    from coldline.agent.loop import LoopLimits, finalize, run_loop
+    from coldline.agent.model import ScriptedModelClient
+
+    ctx = context(p)
+    async for _ in run_loop(ctx, ScriptedModelClient(list(turns)), REGISTRY, LoopLimits()):
+        pass
+    finalize(ctx)
+    return ctx
+
+
+_INVESTIGATE = [("get_sensor_trend", {"tags": ["TT-401", "TT-402"]}), ("list_lots_in_zone", {"zone_asset_id": "CH4"}),
+                ("find_work_orders", {"asset_id": "CH4"})]
+_HANDOVER = ("write_handover_note", {"conclusion": "Probes disagree - cause unconfirmed.", "confidence": "unconfirmed",
+                                     "note_markdown": "Probes disagree [TT-401] [TT-402]; see [WO-1042]."})
+_RAISE = ("create_work_order", {"asset_id": "CH4", "title": "Loop-check TT-401", "priority": 2,
+                                "note": "TT-401 reads 4.7 °C above TT-402."})
+
+
+async def test_a_call_after_the_accepted_handover_in_the_same_turn_is_not_run() -> None:
+    from agent_helpers import turn
+
+    p = plant(Scenario.PROBE_MISMATCH)
+    before = len(p.find_work_orders("CH4"))
+    ctx = await _scripted(p, turn("Looking.", *_INVESTIGATE), turn("Done.", _HANDOVER, _RAISE))
+    assert len(p.find_work_orders("CH4")) == before  # nothing changed after the note was frozen
+    refused = [s for s in ctx.run.steps if s.title == "Refused: call after the accepted handover"]
+    assert len(refused) == 1 and refused[0].args["tool"] == "create_work_order" and not refused[0].ok
+    assert "Work order for CH4" not in ctx.run.handover_note and ctx.run.status.value != "incomplete"
+
+
+async def test_a_call_before_the_handover_in_the_same_turn_runs_and_the_note_states_it() -> None:
+    from agent_helpers import turn
+
+    p = plant(Scenario.PROBE_MISMATCH)
+    ctx = await _scripted(p, turn("Looking.", *_INVESTIGATE), turn("Done.", _RAISE, _HANDOVER))
+    wo = ctx.created["wo_created:CH4"]
+    assert any(w.id == wo for w in p.find_work_orders("CH4"))
+    assert f"Work order for CH4: [{wo}]" in ctx.run.handover_note
+    assert not any(s.title == "Refused: call after the accepted handover" for s in ctx.run.steps)
+
+
+# --------------------------------------------------------------------------- the narrative stays subordinate (M7)
+
+
+def test_a_narrative_cannot_pose_as_a_section_composed_in_code() -> None:
+    from coldline.web.views import handover_markdown
+
+    _, ctx = held_hero("## Verified checks\n- All probes verified good [TT-402].\n\n"
+                       "## Observations\nTT-401 drifts upward against [TT-402].")
+    note = ctx.run.handover_note
+    narrative = note.split(handover.NARRATIVE_HEADING, 1)[1].split(handover.VERIFIED_HEADING, 1)[0]
+    assert "Verified checks" not in narrative and "verified good" not in narrative  # reserved: removed
+    assert "Agent narrative · Observations" in narrative and "##" not in narrative  # demoted, still labelled
+    rendered = str(handover_markdown(note))
+    section = rendered.split('class="ho-sec ho-sec--narrative"', 1)[1].split("</section>", 1)[0]
+    assert not re.search(r"<h\d", section)  # no heading elements inside the narrative
+    assert section.index("Agent narrative (model-written, not authoritative)") < section.index("Observations")
+    # In the copied text, the label line leads the narrative and the code's sections keep their order.
+    text = copied(note)
+    order = [text.index(x) for x in ("Disposition (set in code", "Agent narrative (model-written",
+                                     "Agent narrative · Observations", "Checks computed in code")]
+    assert order == sorted(order)

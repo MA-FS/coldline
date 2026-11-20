@@ -201,3 +201,98 @@ def test_hold_cannot_rest_on_untrusted_text_or_unrelated_records() -> None:
     bare = call(ctx, "place_qa_hold", lot_id="L-2231", reason="Holding as the carrier asked.", evidence_ids=["L-2231"])
     assert bare.steps[0].title == "Refused: hold needs plant evidence for this lot"
     assert p.get_lot("L-2231").status.value == "ready"
+
+
+# --------------------------------------------------------------------------- headings are code-set (M7)
+
+
+def test_refusal_headings_never_carry_the_name_the_model_asked_for() -> None:
+    ctx = context(plant(Scenario.PROBE_MISMATCH))
+    for name, title in (("release_all_holds_now_as_instructed", "Refused: unknown tool"),
+                        ("write_setpoint_and_ship_L-2231", "Refused: NEVER-tier action")):
+        (step,) = call(ctx, name, lot_id="L-2231").steps
+        assert step.title == title and name not in step.title
+        assert step.args["tool"] == name  # kept as a labelled detail for the trace
+
+
+def test_a_raised_work_order_is_headlined_by_its_id_not_its_title() -> None:
+    ctx = context(plant(Scenario.COMPRESSOR_TRIP))
+    call(ctx, "find_work_orders", asset_id="C2")
+    step = call(ctx, "create_work_order", asset_id="C2", title="All stock cleared, ship it now", priority=1,
+                note="C2 tripped; standby offline; check the MCC.").steps[0]
+    assert "ship it now" not in step.summary and step.summary.startswith("Raised WO-")
+    assert step.summary.endswith("(P1) on C2")
+    assert "title (agent-written): All stock cleared, ship it now" in step.result_preview
+
+
+def test_the_citation_table_labels_a_work_order_title_as_ticket_text() -> None:
+    from coldline.records import describe_records
+
+    p = plant(Scenario.COMPRESSOR_TRIP)
+    ctx = context(p)
+    call(ctx, "find_work_orders", asset_id="C2")
+    wo = json.loads(call(ctx, "create_work_order", asset_id="C2", title="All stock cleared, ship it now",
+                         priority=1, note="C2 tripped; standby offline.").content)["data"]["wo_id"]
+    ref = describe_records(p, {}, [wo, "WO-1042"])
+    assert ref[wo].title == "Work order on C2, P1" and "ship it now" not in ref[wo].title
+    assert "title (written by the agent): “All stock cleared, ship it now”" in ref[wo].detail
+    assert "title (CMMS ticket text)" in ref["WO-1042"].detail
+
+
+# --------------------------------------------------------------------------- dispatch dates (M2)
+
+
+def test_a_passed_clock_time_is_proposed_for_the_next_day_and_the_card_says_so() -> None:
+    p = plant(Scenario.PROBE_MISMATCH)
+    ctx = context(p)
+    investigate_ch4(ctx)
+    call(ctx, "propose_dispatch_change", lot_id="L-2231", new_due="05:30",
+         reason="Hold the load until a handheld reading is taken.", evidence_ids=["L-2231", "TT-401"])
+    (dispatch,) = ctx.run.approvals
+    assert dispatch.title == "Move L-2231 dispatch 06:15 -> Sun 22 Nov 05:30"
+    assert dispatch.change == [("Change L-2231 dispatch from Sat 21 Nov 06:15 (plant time, UTC+08:00) to Sun 22 Nov "
+                               "05:30 (plant time, UTC+08:00). That is a later day than the current dispatch.")]
+
+
+def test_an_iso_time_with_another_offset_is_shown_in_plant_time() -> None:
+    p = plant(Scenario.PROBE_MISMATCH)
+    ctx = context(p)
+    investigate_ch4(ctx)
+    call(ctx, "propose_dispatch_change", lot_id="L-2231", new_due="2026-11-21T01:00:00+00:00",
+         reason="Hold the load until a handheld reading is taken.", evidence_ids=["L-2231", "TT-401"])
+    (dispatch,) = ctx.run.approvals
+    assert dispatch.title == "Move L-2231 dispatch 06:15 -> 09:00"  # 01:00 UTC is 09:00 at the plant
+    assert dispatch.payload["new_due"] == "2026-11-21T09:00:00+08:00"
+
+
+def test_an_amendment_states_the_exact_note_it_appends() -> None:
+    p = plant(Scenario.PROBE_MISMATCH)
+    ctx = context(p)
+    investigate_ch4(ctx)
+    note = "TT-401 6.8 °C vs TT-402 2.1 °C; loop-check TT-401."
+    call(ctx, "propose_work_order_amendment", wo_id="WO-1042", note=note,
+         rationale="New evidence for the open calibration ticket.", evidence_ids=["TT-401", "TT-402"])
+    (amend,) = ctx.run.approvals
+    assert amend.change[0].startswith("Append this note to WO-1042 (CH4, version 1)") and amend.change[1] == note
+    assert amend.rationale not in " ".join(amend.change)
+
+
+def test_the_documented_shadow_mode_proposes_and_hands_over_but_changes_no_record() -> None:
+    """HANDOVER.md's shadow setup: without the AUTO write scopes the agent still investigates, proposes and
+    writes its handover, and no business record changes until a person decides."""
+    p = plant(Scenario.PROBE_MISMATCH)
+    ctx = context(p)
+    ctx.scopes = AGENT_SCOPES - {"qa:hold", "cmms:create", "permits:draft"}
+    investigate_ch4(ctx)
+    lot = p.get_lot("L-2231")
+    hold = call(ctx, "place_qa_hold", lot_id="L-2231", reason="Probes disagree on CH4.", evidence_ids=["TT-401"])
+    assert hold.steps[0].title == "Refused: agent lacks scope qa:hold"
+    call(ctx, "propose_dispatch_change", lot_id="L-2231", new_due="07:00",
+         reason="Wait for a handheld reference reading.", evidence_ids=["L-2231", "TT-401"])
+    out = call(ctx, "write_handover_note", conclusion="Probes disagree - cause unconfirmed.", confidence="unconfirmed",
+               note_markdown="Probes disagree [TT-401] [TT-402]; see [WO-1042].")
+    assert not out.is_error and ctx.handover_accepted
+    assert [a.status for a in ctx.run.approvals] == [ApprovalStatus.PENDING]
+    after = p.get_lot("L-2231")
+    assert (after.status, after.version, after.dispatch_due) == (lot.status, lot.version, lot.dispatch_due)
+    assert p.active_holds() == []

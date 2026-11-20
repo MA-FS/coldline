@@ -6,7 +6,12 @@
 It is an async generator of :class:`TraceStep` so the web layer can stream each step as it happens.
 Bounds: ``max_model_calls`` per run, ``max_tokens_per_call``, a per-call timeout and a wall-clock budget
 for the whole run. In live mode every call first reserves an upper bound on its cost against the daily cap
-(see :mod:`coldline.agent.budget`); a call whose outcome is unknown keeps its reservation.
+(see :mod:`coldline.agent.budget`): the sum over every attempt the request allows (the model, then each
+named server-side fallback). It is settled at the sum of every attempt the response reports, each at its
+own model's rate. A call whose outcome is unknown keeps its reservation.
+
+The batch of tool calls in one model turn stops at an accepted handover: the note is final, so a call after
+it in the same turn is not run (it gets a refused result), and nothing can change the records it states.
 Any failure that should not be shown as a broken agent (API error, timeout, refusal, budget) raises
 :class:`LiveRunAborted` after emitting a visible step, and the service falls back to replay.
 """
@@ -90,6 +95,7 @@ async def run_loop(
     trigger: str | None = None,
     record_turns: bool = False,
     billable_models: tuple[str, ...] = (),
+    origin: str = "",
 ) -> AsyncIterator[TraceStep]:
     tools = registry.definitions()
     messages: list[dict] = [{"role": "user", "content": trigger or build_trigger(ctx.systems)}]
@@ -107,11 +113,11 @@ async def run_loop(
             raise LiveRunAborted("run time limit reached")
 
         reservation = None
+        attempts = billable_models or (client.model,)  # primary first, then each named fallback
         if budget is not None:
-            worst = reservation_usd(billable_models or (client.model,), input_token_bound(tools, messages),
-                                    limits.max_tokens_per_call)
+            worst = reservation_usd(attempts, input_token_bound(tools, messages), limits.max_tokens_per_call)
             try:
-                reservation = budget.reserve(worst)
+                reservation = budget.reserve(worst, origin=origin)
             except BudgetExceeded as exc:
                 yield ctx.guardrail("Budget check: daily cost cap reached", str(exc))
                 raise LiveRunAborted("daily cost cap reached") from exc
@@ -148,7 +154,7 @@ async def run_loop(
             raise
 
         measured_ms = int((time.monotonic() - t0) * 1000)
-        cost = cost_usd(response.model, response.usage)
+        cost = cost_usd(response.model, response.usage, attempts)
         _settle(budget, reservation, cost)
         if turns is not None:
             turns.append({
@@ -161,12 +167,13 @@ async def run_loop(
             })
         u = response.usage
         planned = ", ".join(c.name for c in response.tool_calls)
+        billed = f" · {len(u.attempts)} billed attempts" if len(u.attempts) > 1 else ""
         yield ctx.emit(
             StepKind.THINK,
             f"Model call {call_no} (limit {limits.max_model_calls})",
             summary=response.text or (f"Calling {planned}" if planned else "No further tool calls."),
             result_preview=(f"in {u.total_input} tok ({u.cache_read_input_tokens} cached) · out "
-                            f"{u.output_tokens} tok · US${cost:.4f} · {response.model}"),
+                            f"{u.output_tokens} tok · US${cost:.4f} · {response.model}{billed}"),
             latency_ms=response.latency_ms or measured_ms,
             input_tokens=u.total_input,
             output_tokens=u.output_tokens,
@@ -192,9 +199,14 @@ async def run_loop(
 
         results = []
         for call in response.tool_calls:
-            if limits.tool_delay_s:
-                await asyncio.sleep(limits.tool_delay_s)
-            outcome = registry.execute(ctx, call.name, call.input)
+            if ctx.handover_accepted:
+                # The accepted handover ends the run: a later call in the same turn is refused, not run, so no
+                # write or proposal can disagree with the note that was just frozen.
+                outcome = registry.refuse_after_handover(ctx, call.name, call.input)
+            else:
+                if limits.tool_delay_s:
+                    await asyncio.sleep(limits.tool_delay_s)
+                outcome = registry.execute(ctx, call.name, call.input)
             for step in outcome.steps:
                 yield step
             block = {"type": "tool_result", "tool_use_id": call.id, "content": outcome.content}

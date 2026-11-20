@@ -105,3 +105,22 @@ def test_handover_renders_citation_chips() -> None:
 
 def test_unknown_run_is_404() -> None:
     assert client.get("/preview/runs/R-0000").status_code == 404
+
+
+def test_eval_medians_come_from_one_labelled_population() -> None:
+    """The review's case: the "measured" medians mixed recorded, authored and scripted cases and took the
+    upper middle value of an even list. They are now the scenario recordings' true medians, labelled."""
+    import statistics
+
+    from coldline.web.context import eval_rows
+
+    _, meta = eval_rows({"cases": [
+        {"id": f"s{i}", "title": "t", "category": "scenario", "scenario": "door_open", "passed": True,
+         "assertions": [], "cost_usd": c, "latency_ms": ms, "mode": "scripted"}
+        for i, (c, ms) in enumerate([(0.01, 1000), (0.02, 3000), (0.03, 5000), (0.05, 9000)])
+    ] + [{"id": "a", "title": "t", "category": "adversarial", "scenario": "door_open", "passed": True,
+          "assertions": [], "cost_usd": 0.0, "latency_ms": 0, "mode": "scripted"}]})
+    assert meta["median_n"] == 4 and meta["median_cost"] == pytest.approx(0.025)  # even count: the mean of two
+    assert meta["median_latency"] == statistics.median([1000, 3000, 5000, 9000]) == 4000
+    page = client.get("/evals").text
+    assert "median of the 5 scenario recordings, as recorded" in page and "Median cost per scenario" in page

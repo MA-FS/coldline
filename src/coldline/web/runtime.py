@@ -21,6 +21,12 @@ from coldline.web.security import RateLimiter, check_csrf, client_ip
 from coldline.web.settings import WebSettings
 
 ROLES = ("Shift Supervisor", "QA Manager")
+_FRESH = " This is a fresh plant: your earlier runs and approvals are gone, and nobody else's were affected."
+SESSION_NOTICES = {
+    "idle": "Your previous sandbox was cleared after a period without activity." + _FRESH,
+    "capacity": "Your previous sandbox was cleared while it was idle, to make room for other visitors." + _FRESH,
+    "origin": "Your previous sandbox was replaced by a newer one from the same network address." + _FRESH,
+}
 Mode = Literal["replay", "live"]
 
 
@@ -30,6 +36,7 @@ class Prefs:
     role: str = ROLES[0]
     focus: str | None = None  # chiller shown in the detail panel
     recent_expired: set[str] = field(default_factory=set)  # approvals expired by the visitor's last action
+    notice: str = ""  # why the visitor's previous sandbox was cleared; shown until they start something new
 
 
 @dataclass
@@ -47,7 +54,7 @@ class Runtime:
         s = self.settings
         self.sessions = SessionManager(
             s.session_ttl_s, s.max_sessions, max_per_origin=s.max_sessions_per_origin, on_evict=self.forget,
-            is_busy=lambda sid: self.agent.active_run(sid) is not None,
+            protect_recent_s=s.session_protect_s, is_busy=lambda sid: self.agent.active_run(sid) is not None,
         )
         self.post_limiter = RateLimiter(s.posts_per_minute, 60)
         self.run_limiter = RateLimiter(s.runs_per_minute, 60)
@@ -94,7 +101,11 @@ async def visitor(request: Request) -> Visitor:
     except SessionCapacityError:
         raise HTTPException(503, "The demo is at capacity right now. Try again in a minute.") from None
     plant.advance_wall_time()
-    return Visitor(sid=sid, plant=plant, prefs=rt.prefs_for(sid), ip=ip)
+    prefs = rt.prefs_for(sid)
+    cleared = rt.sessions.take_notice(sid)
+    if cleared:
+        prefs.notice = SESSION_NOTICES.get(cleared, SESSION_NOTICES["capacity"])
+    return Visitor(sid=sid, plant=plant, prefs=prefs, ip=ip)
 
 
 async def limit_posts(request: Request) -> None:

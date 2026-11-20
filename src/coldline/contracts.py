@@ -296,9 +296,11 @@ class Approval(BaseModel):
     run_id: str
     action: str  # tool name, e.g. "change_dispatch"
     title: str  # "Move L-2231 dispatch 06:15 -> 07:00"
-    rationale: str
+    rationale: str  # model-written: why the agent proposes it (never what runs)
     payload: dict[str, Any]
     evidence_ids: list[str] = []
+    change: list[str] = []  # exactly what runs on approval, composed in code from the payload and records
+    checks: list[str] = []  # preconditions code verified at proposal time; re-checked on approval
     source_versions: dict[str, int] = {}  # record id -> version at proposal time
     status: ApprovalStatus = ApprovalStatus.PENDING
     decided_by: str | None = None

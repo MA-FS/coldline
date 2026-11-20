@@ -18,7 +18,9 @@ dependencies = [
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx>=0.27", "ruff>=0.6"]
 
 [build-system]
-requires = ["hatchling"]
+# Pinned exactly. The deployed image never builds the project (it installs only the locked dependencies and
+# runs from source, see the Dockerfile); this backend is used for local and CI editable installs.
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

@@ -1,0 +1,18 @@
+{#- Inside the copy target, above the note: empty while the note is current, the "superseded" banner when the
+    plant has changed since it was accepted. It refreshes itself (and, out of band, the current-state panel and
+    the badge) so a tab left open never keeps an old note looking current.
+    Context: run, sup (handover.Supersession), current (list[str]), plant_now, href_prefix -#}
+{% set P = href_prefix or "" %}
+<div id="handover-banner" class="ho-banner{% if sup.superseded %} ho-banner--superseded{% endif %}"{% if sup.superseded %} role="status"{% endif %}
+     hx-get="{{ P }}/handover?run_id={{ run.run_id }}" hx-trigger="every 10s" hx-select="#handover-banner"
+     hx-swap="outerHTML" hx-select-oob="#handover-now,#handover-state">
+{% if sup.superseded %}
+  <p><b>Superseded: this note is a snapshot as at {{ sup.at|hhmm if sup.at else run.started_at|hhmm }}. Do not act on its disposition; the plant has changed since.</b></p>
+  <ul>
+    {% for change in sup.changes %}<li>{{ change|cite }}</li>{% endfor %}
+    {% if sup.later %}<li>{{ sup.later }}{% if sup.later_run %} <a href="{{ P }}/runs/{{ sup.later_run }}">Open {{ sup.later_run }}</a>{% endif %}</li>{% endif %}
+  </ul>
+  <p><b>Current state at {{ plant_now|hhmm }} (set in code from the plant records):</b></p>
+  <ul>{% for line in current %}<li>{{ line|cite }}</li>{% endfor %}</ul>
+{% endif %}
+</div>

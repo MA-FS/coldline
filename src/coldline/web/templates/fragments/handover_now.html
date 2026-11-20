@@ -1,0 +1,5 @@
+{#- The holds and proposals in force now, composed in code. Context: current (list[str]), plant_now -#}
+{% import "components/ui.html" as ui %}
+{% call ui.panel("Now on the plant", id="handover-now", meta="At " ~ (plant_now|hhmm) ~ " · set in code from the plant records") %}
+  <ul class="ho-now">{% for line in current %}<li>{{ line|cite }}</li>{% endfor %}</ul>
+{% endcall %}

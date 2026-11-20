@@ -7,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from agent_helpers import SUPERVISOR, call, context, investigate_ch4, plant
 
-from coldline.contracts import ApprovalStatus, Scenario
+from coldline.agent.evidence import CLEARANCE_WINDOW_MIN
+from coldline.contracts import ApprovalStatus, LotStatus, Scenario
 
 
 def _hero_with_proposals():
@@ -107,18 +108,86 @@ def test_identical_pending_proposal_is_not_duplicated() -> None:
     assert [a.id for a in ctx.run.approvals].count(dispatch.id) == 1
 
 
-def test_release_proposal_needs_qa_manager() -> None:
-    p = plant(Scenario.PROBE_MISMATCH)
-    p.place_qa_hold("L-2231", "Check", "QA Manager", [])
+def _held_lot(scenario: Scenario | None = None, minutes_after_hold: int = CLEARANCE_WINDOW_MIN + 1):
+    """L-2231 on a QA hold, the plant run on for a while after it, then a fresh investigation of CH4."""
+    p = plant(scenario)
+    hold = p.place_qa_hold("L-2231", "Check", "QA Manager", [])
+    p.tick(minutes_after_hold * 60)
     ctx = context(p)
     investigate_ch4(ctx)
-    call(ctx, "propose_release_qa_hold", lot_id="L-2231", rationale="Handheld reading confirmed 2.0 °C.",
-         evidence_ids=["L-2231", "TT-402"])
+    return p, ctx, hold
+
+
+def _propose_release(ctx):
+    return call(ctx, "propose_release_qa_hold", lot_id="L-2231", rationale="Handheld reading confirmed 2.0 °C.",
+                evidence_ids=["L-2231", "TT-402"])
+
+
+def test_release_is_refused_without_verified_clearance() -> None:
+    """The review's case: on the mismatch fixture a QA click released L-2231 on a reading the model only
+    described. The release is now refused before any proposal exists, and the hold stays."""
+    p, ctx, _ = _held_lot(Scenario.PROBE_MISMATCH)
+    out = _propose_release(ctx)
+    assert out.steps[0].title == "Evidence precondition failed: release needs verified clearance"
+    assert "TT-401 and TT-402 disagree" in out.steps[0].summary
+    assert not ctx.run.approvals and p.get_lot("L-2231").status == LotStatus.HOLD
+
+
+@pytest.mark.parametrize(("minutes", "stale", "reason"), [
+    (5, None, "a release needs 30 min of readings taken after the hold"),
+    (CLEARANCE_WINDOW_MIN + 1, "TT-402", "TT-402 is stale"),
+], ids=["too_soon_after_the_hold", "stale_reference_probe"])
+def test_release_needs_fresh_readings_taken_after_the_hold(minutes: int, stale: str | None, reason: str) -> None:
+    p = plant()
+    p.place_qa_hold("L-2231", "Check", "QA Manager", [])
+    p.tick(minutes * 60)
+    if stale:
+        p.make_stale(stale)
+    ctx = context(p)
+    investigate_ch4(ctx)
+    out = _propose_release(ctx)
+    assert out.steps[0].title == "Evidence precondition failed: release needs verified clearance"
+    assert reason in out.steps[0].summary, out.steps[0].summary
+    assert not ctx.run.approvals
+
+
+def test_verified_clearance_lets_qa_release_and_shows_what_was_checked() -> None:
+    p, ctx, hold = _held_lot()
+    _propose_release(ctx)
     (release,) = ctx.run.approvals
+    assert release.change == [f"Release QA hold {hold.id} on L-2231 (CH4); L-2231 becomes ready to ship."]
+    assert len(release.checks) == 3 and "all after " + hold.id in release.checks[0]
+    assert release.checks[1].startswith("Probes agree: mean gap")
     with pytest.raises(PermissionError):
         ctx.approvals.approve(release.id, SUPERVISOR, p)
     assert ctx.approvals.approve(release.id, "QA Manager", p).executed
     assert p.get_lot("L-2231").status.value == "ready"
+
+
+def test_clearance_is_checked_again_when_qa_decides() -> None:
+    p, ctx, _ = _held_lot()
+    _propose_release(ctx)
+    (release,) = ctx.run.approvals
+    p.make_stale("TT-402")  # the reference probe stops reporting after the proposal
+    result = ctx.approvals.approve(release.id, "QA Manager", p)
+    assert not result.executed and release.status == ApprovalStatus.EXPIRED
+    assert "release clearance no longer holds: TT-402 is stale" in result.message
+    assert p.get_lot("L-2231").status == LotStatus.HOLD
+
+
+def test_clearance_check_runs_inside_the_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing else about the evidence changed: the clearance re-check alone refuses the release."""
+    from coldline.agent import approvals as approvals_module
+    from coldline.agent.evidence import Clearance
+
+    p, ctx, _ = _held_lot()
+    _propose_release(ctx)
+    (release,) = ctx.run.approvals
+    monkeypatch.setattr(approvals_module, "release_clearance", lambda *_a, **_k: Clearance(
+        lot_id="L-2231", asset_id="CH4", ok=False, reason="TT-401 reached 5.4 °C in the last 30 min"))
+    result = ctx.approvals.approve(release.id, "QA Manager", p)
+    assert not result.executed and "TT-401 reached 5.4 °C" in result.message
+    assert p.get_lot("L-2231").status == LotStatus.HOLD
 
 
 async def test_a_shared_proposal_keeps_references_only_to_retained_runs() -> None:

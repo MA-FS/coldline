@@ -114,6 +114,6 @@ def test_genuine_flagged_message_is_headlined_with_its_record_id() -> None:
     assert not out.is_error and ctx.injection_flags == [msg]
     call(ctx, "write_handover_note", conclusion="Probes disagree - cause unconfirmed.", confidence="unconfirmed",
          note_markdown="Probes disagree [TT-401] [TT-402], see [WO-1042].")
-    status = ctx.run.handover_note.split("\n")[1]
+    status = ctx.run.handover_note.split("\n")[3]  # after the snapshot label and the disposition heading
     assert status.startswith(f"- Status: Suspected prompt injection in {msg} - no action taken on its contents.")
     assert ctx.run.conclusion.startswith(f"Suspected prompt injection in {msg}")

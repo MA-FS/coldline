@@ -144,8 +144,13 @@ class SecurityMiddleware:
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
                 headers.extend(self.headers)
-                if is_new and not static:
-                    headers.append((b"set-cookie", self._cookie(sid).encode("latin-1")))
+                if not static:
+                    # Every non-static response is built from one visitor's sandbox: never stored by a shared
+                    # cache, nor kept by the browser to be shown again after the session has moved on.
+                    if not any(name.lower() == b"cache-control" for name, _ in headers):
+                        headers.append((b"cache-control", b"private, no-store"))
+                    if is_new:
+                        headers.append((b"set-cookie", self._cookie(sid).encode("latin-1")))
                 message["headers"] = headers
             await send(message)
 

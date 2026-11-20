@@ -12,11 +12,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from coldline.agent.handover import Supersession
 from coldline.contracts import ApprovalStatus, Scenario
 from coldline.web import fixtures as fx
 from coldline.web.charts import ChartEvent, Series, trend_svg
 from coldline.web.render import base_context, templates
-from coldline.web.views import chiller_detail, plant_view
+from coldline.web.views import chiller_detail, citations, plant_view
 
 router = APIRouter(include_in_schema=False)
 styleguide_router = APIRouter(include_in_schema=False)  # kept in production; previews are not
@@ -186,7 +187,8 @@ def preview_audit(request: Request) -> HTMLResponse:
 @router.get("/preview/evals", response_class=HTMLResponse)
 def preview_evals(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
-        request, "pages/evals.html", {**_base("evals", "Evals"), "evals": fx.evals()}
+        request, "pages/evals.html", {**_base("evals", "Evals"), "evals": fx.evals(),
+                                       "eval_meta": {"median_n": 0, "median_cost": None, "median_latency": None}}
     )
 
 
@@ -200,7 +202,13 @@ def preview_impact(request: Request) -> HTMLResponse:
 @router.get("/preview/handover", response_class=HTMLResponse)
 def preview_handover(request: Request, run_id: str = "R-7842") -> HTMLResponse:
     run = fx.run_by_id(run_id) or fx.hero_run()
-    ctx = {**_base("handover", "Shift handover"), "run": run, "evidence": fx.evidence()}
+    ev = fx.evidence()
+    sources = [{"id": rid, "title": ev.get(rid, {}).get("title", ""), "then": ev.get(rid, {}).get("detail", ""),
+                "now": "", "has_then": True} for rid in citations(run.handover_note)]
+    current = [f"[{a.payload['lot_id']}]: on QA hold." for a in run.approvals if "lot_id" in a.payload][:1] or [
+        "No lot is on QA hold."]
+    ctx = {**_base("handover", "Shift handover"), "run": run, "latest": run, "plant_now": run.started_at,
+           "sup": Supersession(at=run.started_at, current=current), "current": current, "sources": sources}
     return templates.TemplateResponse(request, "pages/handover.html", ctx)
 
 

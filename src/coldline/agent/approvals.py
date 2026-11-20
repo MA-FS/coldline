@@ -16,9 +16,16 @@ turns it into an :class:`Approval` bound to:
   proposal; the token cannot. Each store has its own generation, which a token starts with, so a token from
   an expired or reset session is recognised as such and refused with "session expired".
 
-``approve()`` re-reads those values and re-checks the action's own preconditions (a new dispatch time must
-still be in the future) inside one sandbox transaction, then executes and audits under the same locks. If
-anything changed, the approval becomes ``EXPIRED`` with the reason, and nothing runs. A double click or a
+Each approval also carries ``change``, the exact change that runs on approval, composed in code (the model's
+``rationale`` is shown separately, labelled as model-written), and ``checks``, the preconditions code verified
+when it was proposed. A QA hold release needs verified clearance
+(:func:`~coldline.agent.evidence.release_clearance`: both probes fresh, agreeing and within the limit for
+the required window, all after the hold was placed); a dispatch change needs a time still in the future.
+
+``approve()`` re-reads those values and re-checks the action's own preconditions, including the release
+clearance, inside one sandbox transaction, then executes and audits under the same locks. If anything
+changed or a precondition no longer holds, the approval becomes ``EXPIRED`` with the reason, and nothing
+runs. A double click or a
 retried request cannot apply an action twice. ``decline()`` needs the same authority as ``approve()`` and
 only records the decision. ``revalidate()`` applies the same check without a click, so expiry shows as soon
 as the evidence changes.
@@ -40,7 +47,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from coldline.agent.evidence import Verdict, assess_chiller
+from coldline.agent.evidence import Verdict, assess_chiller, release_clearance
 from coldline.contracts import Approval, ApprovalStatus, AuditEvent, PlantSystems, Quality
 from coldline.sim import analysis
 
@@ -61,11 +68,13 @@ class Source:
 class Proposal:
     action: str  # the systems method that runs on approval, e.g. "change_dispatch"
     title: str
-    rationale: str
+    rationale: str  # the model's reason, shown labelled as model-written
     payload: dict[str, Any]
     evidence_ids: list[str]
     sources: list[Source]
     approver_roles: tuple[str, ...]
+    change: list[str] = field(default_factory=list)  # exactly what runs on approval, composed in code
+    checks: list[str] = field(default_factory=list)  # preconditions code verified (re-checked on approval)
 
 
 class StaleDecision(Exception):
@@ -169,6 +178,17 @@ def precondition_failure(approval: Approval, systems: PlantSystems) -> str:
         due = datetime.fromisoformat(approval.payload["new_due"])
         if due <= systems.now():
             return f"the proposed dispatch time {due:%H:%M} has already passed"
+    if approval.action == "release_qa_hold":
+        lot_id = approval.payload["lot_id"]
+        try:
+            hold = systems.active_hold(lot_id)
+        except KeyError:
+            return f"{lot_id} no longer exists"
+        if hold is None or hold.id != approval.payload.get("hold_id"):
+            return ""  # the hold source already reports this change
+        clearance = release_clearance(systems, lot_id, hold)
+        if not clearance.ok:
+            return f"release clearance no longer holds: {clearance.reason}"
     return ""
 
 
@@ -236,6 +256,8 @@ class ApprovalStore:
                 rationale=proposal.rationale,
                 payload=proposal.payload,
                 evidence_ids=proposal.evidence_ids,
+                change=list(proposal.change),
+                checks=list(proposal.checks),
                 source_versions=versions,
                 idempotency_key=hashlib.sha256(key_material.encode()).hexdigest()[:24],
                 decision_token=f"{self.generation}.{secrets.token_urlsafe(12)}",

@@ -90,7 +90,8 @@ A run is at most 8 model calls. Each call sees the frozen system prompt and tool
 the conversation so far. Every tool call goes through `ToolRegistry.execute`, which checks the tool exists,
 is not NEVER tier, matches the agent's scopes, validates arguments, and applies the evidence rules (for
 example: no citations of records the run never read; no dispatch change while the evidence is stale). The
-run ends when the handover note is accepted or a bound is hit. Details are in
+run ends when the handover note is accepted (a later tool call in the same model turn is refused, so nothing
+changes after the note is frozen) or a bound is hit. Details are in
 [the agent README](../src/coldline/agent/README.md).
 
 **Replay** feeds recorded model turns through the same loop, so the tools, checks, holds and approvals are

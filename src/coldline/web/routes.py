@@ -19,7 +19,6 @@ from coldline.contracts import RunTrace
 from coldline.web import context as cx
 from coldline.web.render import templates
 from coldline.web.runtime import Runtime, Visitor, runtime, visitor
-from coldline.web.views import citations
 
 router = APIRouter(include_in_schema=False)
 V = Annotated[Visitor, Depends(visitor)]
@@ -132,11 +131,13 @@ async def impact(request: Request, v: V, rt: RT) -> HTMLResponse:
 async def handover(request: Request, v: V, rt: RT, run_id: str | None = None) -> HTMLResponse:
     run = cx.handover_run(rt, v.sid, run_id)
     if run_id and run is None:
+        if request.headers.get("hx-request"):
+            # The page's own refresh, after a reset or expiry elsewhere: say so in the banner (inside the copy
+            # target) instead of leaving the old note looking current.
+            ctx = {**cx.shell(rt, v, "handover", "Shift handover"), "gone": run_id}
+            return page(request, "fragments/handover_gone.html", ctx)
         raise HTTPException(404, f"No run {run_id} in this session.")
-    evidence = {}
-    if run is not None:
-        evidence = cx.evidence_dict(cx.evidence_refs(v.plant, rt.agent, v.sid, citations(run.handover_note)))
-    ctx = {**cx.shell(rt, v, "handover", "Shift handover"), "run": run, "evidence": evidence}
+    ctx = {**cx.shell(rt, v, "handover", "Shift handover"), **cx.handover_context(rt, v, run)}
     return page(request, "pages/handover.html", ctx)
 
 

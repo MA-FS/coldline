@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from coldline.agent import AgentService, AgentSettings
 from coldline.agent.budget import BudgetExceeded, BudgetGuard
-from coldline.agent.pricing import CONSERVATIVE, Usage, cost_usd, price_for, worst_case_cost_usd
+from coldline.agent.pricing import CONSERVATIVE, Attempt, Usage, cost_usd, price_for, worst_case_cost_usd
 from coldline.main import create_app
 from coldline.web.security import COOKIE_NAME, read_cookie_value
 from coldline.web.settings import WebSettings
@@ -67,6 +68,7 @@ def test_daily_spend_persists_and_resets_next_day(tmp_path) -> None:
     g = guard(clock, state_path=path)
     g.settle(g.reserve(0.3), 0.3)
     assert json.loads(path.read_text())["spent_usd"] == 0.3
+    g.close()  # the process stops
     assert guard(clock, state_path=path).status("s", live_enabled=True, api_key_present=True).spent_today_usd == 0.3
     clock.t += 86_400
     assert guard(clock, state_path=path).status("s", live_enabled=True, api_key_present=True).spent_today_usd == 0
@@ -92,7 +94,7 @@ def test_pricing_table() -> None:
 
 def test_new_sessions_from_one_address_share_a_daily_quota() -> None:
     clock = Clock()
-    g = guard(clock, max_concurrent=100, origin_runs_per_day=4)
+    g = guard(clock, max_concurrent=100, origin_concurrent=100, origin_runs_per_day=4)
     started = [g.admit(f"cookie-{i}", origin="203.0.113.7") for i in range(6)]
     assert started[:4] == ["", "", "", ""] and all("this address" in r for r in started[4:])
     assert g.admit("someone-else", origin="198.51.100.2") == ""
@@ -112,23 +114,142 @@ def test_status_reads_allocate_nothing_and_idle_entries_expire() -> None:
     assert set(g._runs) == {"t"} and g._origin_runs == {}
 
 
+def test_one_address_cannot_hold_both_live_slots_or_the_whole_cap() -> None:
+    """The review's case: with two live slots and a shared cap, one address could occupy both slots and
+    spend the day's budget. It now gets one slot at a time and a share of the cap."""
+    g = guard(Clock(), daily_cap_usd=3.0, max_concurrent=2, origin_daily_usd_cap=1.0, min_call_reserve_usd=0.05)
+    me, other = "203.0.113.7", "198.51.100.2"
+    assert g.admit("a", origin=me) == ""
+    assert "already in progress" in g.admit("b", origin=me)  # a second cookie, same address
+    assert g.admit("c", origin=other) == ""  # someone else still gets the other slot
+    g.settle(g.reserve(0.9, origin=me), 0.9)
+    with pytest.raises(BudgetExceeded, match="this address has US\\$0.100 of its daily share left"):
+        g.reserve(0.2, origin=me)
+    g.reserve(0.2, origin=other)  # the cap as a whole still has room for others
+    g.finish(me)
+    g.settle(g.reserve(0.08, origin=me), 0.08)  # 0.98 of its 1.00 share used: not enough for another call
+    assert "share of today's live-run budget (US$1.00)" in g.admit("d", origin=me)
+
+
 # --------------------------------------------------------------------------- bounds that hold (M1)
 
 
-def test_reservation_bounds_any_model_that_may_answer() -> None:
+def test_reservation_covers_every_attempt_the_request_allows() -> None:
+    """With a named fallback one call can bill two attempts, so the bound is the sum of both worst cases (the
+    fallback may also read the declined attempt's partial output)."""
     from coldline.agent.loop import input_token_bound
     from coldline.agent.pricing import permitted_models, reservation_usd
 
-    models = permitted_models("claude-sonnet-5-5", server_fallback=True)
-    messages = [{"role": "user", "content": "Ü" * 1000}]  # 2 bytes per character: bytes bound tokens
-    bound = input_token_bound([], messages)
+    models = permitted_models("claude-sonnet-5-5", ("claude-sonnet-5",))
+    assert models == ("claude-sonnet-5-5", "claude-sonnet-5")
+    bound = input_token_bound([], [{"role": "user", "content": "Ü" * 1000}])  # 2 bytes a character
     assert bound >= 2000
     reserved = reservation_usd(models, bound, 3000)
-    # The most expensive permitted model answering with the full input and output still fits the reservation.
-    for model in models:
-        worst = cost_usd(model, Usage(cache_creation_input_tokens=bound, output_tokens=3000))
-        assert worst <= reserved + 1e-9
-    assert reservation_usd(permitted_models("claude-sonnet-5-5", False), bound, 3000) < reserved
+    worst = (cost_usd("claude-sonnet-5-5", Usage(cache_creation_input_tokens=bound, output_tokens=3000))
+             + cost_usd("claude-sonnet-5", Usage(cache_creation_input_tokens=bound + 3000, output_tokens=3000)))
+    assert worst <= reserved + 1e-9
+    assert reservation_usd(permitted_models("claude-sonnet-5-5"), bound, 3000) < reserved / 1.9
+    with pytest.raises(ValueError):
+        permitted_models("claude-sonnet-5-5", ("a", "b", "c", "d"))  # the API takes at most three
+
+
+def _two_attempts(model: str = "claude-sonnet-5") -> SimpleNamespace:
+    """Usage as the API reports a declined primary and the fallback that answered: the top-level counters
+    cover the answering attempt only; ``iterations`` lists both."""
+    declined = SimpleNamespace(type="message", model="claude-sonnet-5-5", input_tokens=1000, output_tokens=200,
+                               cache_creation_input_tokens=0, cache_read_input_tokens=0)
+    answered = SimpleNamespace(type="fallback_message", model=model, input_tokens=1000, output_tokens=200,
+                               cache_creation_input_tokens=0, cache_read_input_tokens=0)
+    return SimpleNamespace(input_tokens=1000, output_tokens=200, cache_creation_input_tokens=0,
+                           cache_read_input_tokens=0, iterations=[declined, answered])
+
+
+def test_every_billed_attempt_is_settled_at_its_own_rate() -> None:
+    """The review's case: two equal-priced attempts settled as one. Each attempt now counts."""
+    from coldline.agent.model import billed_usage
+
+    usage = billed_usage(_two_attempts())
+    one = (1000 * 2.00 + 200 * 10.00) / 1e6  # Sonnet 5.5 and Sonnet 5 share input and output list prices
+    assert len(usage.attempts) == 2 and usage.input_tokens == 2000 and usage.output_tokens == 400
+    assert cost_usd("claude-sonnet-5", usage, ("claude-sonnet-5-5", "claude-sonnet-5")) == pytest.approx(2 * one)
+    # Each attempt at its own model's rate: an Opus attempt is priced as Opus, not as the answering model.
+    opus = billed_usage(_two_attempts("claude-opus-5-5"))
+    assert cost_usd("claude-sonnet-5-5", opus) == pytest.approx(one + (1000 * 4.00 + 200 * 20.00) / 1e6)
+    # The provider does not always name the model of a "message" attempt (a live call showed model=None for
+    # the requested model). With one named fallback it can only be the requested model...
+    unnamed = Usage(attempts=(Attempt(model=None, input_tokens=1000, output_tokens=200,
+                                      cache_read_input_tokens=10_000),))
+    assert cost_usd("claude-sonnet-5-5", unnamed, ("claude-sonnet-5-5", "claude-sonnet-5")) == pytest.approx(
+        (1000 * 2.00 + 200 * 10.00 + 10_000 * 0.10) / 1e6)  # Sonnet 5.5's cache-read rate, not Sonnet 5's
+    # ...with more fallbacks it may be a declined fallback: priced at the most expensive model allowed.
+    chain = ("claude-haiku-5-5", "claude-sonnet-5", "claude-opus-5-5")
+    assert cost_usd("claude-haiku-5-5", unnamed, chain) == pytest.approx(
+        (1000 * 4.00 + 200 * 20.00 + 10_000 * 0.20) / 1e6)
+    # A recorded turn keeps its attempts.
+    assert Usage.from_dict(usage.as_dict()) == usage
+
+
+async def test_a_fallback_near_the_cap_is_reserved_and_settled_in_full() -> None:
+    """A live call that falls back bills two attempts. The reservation covers both, the ledger settles both,
+    and the next call is refused because the cap could not cover it."""
+    from agent_helpers import plant, settings
+
+    from coldline.agent.loop import input_token_bound
+    from coldline.agent.model import AnthropicModelClient
+    from coldline.agent.pricing import permitted_models, reservation_usd
+    from coldline.agent.prompts import build_trigger
+    from coldline.agent.service import AgentService
+    from coldline.agent.tools import ToolRegistry
+    from coldline.contracts import Scenario
+
+    class FakeMessages:
+        calls = 0
+
+        async def create(self, **kwargs):
+            FakeMessages.calls += 1
+            assert kwargs["fallbacks"] == [{"model": "claude-sonnet-5", "max_tokens": kwargs["max_tokens"]}]
+            content = [SimpleNamespace(type="tool_use", id=f"toolu_{FakeMessages.calls}", name="list_active_alarms",
+                                       input={})]
+            return SimpleNamespace(content=content, usage=_two_attempts(), model="claude-sonnet-5",
+                                   stop_reason="tool_use")
+
+    fake = SimpleNamespace(beta=SimpleNamespace(messages=FakeMessages()), messages=None)
+    s, p = settings(), plant(Scenario.PROBE_MISMATCH)
+    models = permitted_models(s.model, s.fallbacks)
+    tools = ToolRegistry().definitions()
+    first = reservation_usd(models, input_token_bound(tools, [{"role": "user", "content": build_trigger(p)}]),
+                            s.max_tokens_per_call)
+    billed = cost_usd("claude-sonnet-5", billed_usage_of_two())
+    cap = first + billed / 2  # room for the first call's whole bound, not for a second call after it is billed
+    budget = BudgetGuard(daily_cap_usd=cap, session_runs_per_window=5, max_concurrent=2, min_call_reserve_usd=0.0)
+    svc = AgentService(s, budget=budget,
+                       live_client_factory=lambda st: AnthropicModelClient(st, client=fake))  # type: ignore[arg-type]
+    run = await svc.run_to_completion("s", p, mode="live")
+    status = budget.status("s", live_enabled=True, api_key_present=True)
+    assert FakeMessages.calls == 1 and run.extra["fallback_reason"] == "daily cost cap reached"
+    assert status.spent_today_usd == pytest.approx(billed, abs=1e-4) and billed > 0.0039
+    assert status.spent_today_usd <= cap and not budget.overrun
+    think = next(st for st in run.steps if st.kind.value == "think")
+    assert think.cost_usd == pytest.approx(billed) and "2 billed attempts" in think.result_preview
+
+
+def billed_usage_of_two() -> Usage:
+    from coldline.agent.model import billed_usage
+
+    return billed_usage(_two_attempts())
+
+
+def test_more_attempts_than_reserved_switch_live_runs_off() -> None:
+    """A response reporting attempts the request did not allow costs more than its bound: fail closed."""
+    from coldline.agent.pricing import permitted_models, reservation_usd
+
+    reserved = reservation_usd(permitted_models("claude-sonnet-5-5", ("claude-sonnet-5",)), 2000, 300)
+    attempts = tuple(Attempt(model="claude-opus-5-5", input_tokens=2000, output_tokens=300) for _ in range(4))
+    actual = cost_usd("claude-sonnet-5", Usage(attempts=attempts))
+    assert actual > reserved
+    g = guard(Clock(), daily_cap_usd=3.0, min_call_reserve_usd=0.0)
+    g.settle(g.reserve(reserved), actual)
+    assert "more than its reserved bound" in g.admit("s")
 
 
 async def test_expensive_fallback_near_the_cap_stays_under_it() -> None:
@@ -183,7 +304,8 @@ def test_reservation_is_journalled_before_the_call_and_survives_a_restart(tmp_pa
     path = tmp_path / "agent_spend.json"
     g = guard(clock, state_path=path)
     g.reserve(0.4)  # the process stops here, mid-call
-    assert json.loads(path.read_text())["outstanding"] == {"1": 0.4}
+    assert json.loads(path.read_text())["outstanding"] == {"1": {"usd": 0.4, "day": TODAY}}
+    g.close()
     restarted = guard(clock, state_path=path)
     status = restarted.status("s", live_enabled=True, api_key_present=True)
     assert status.spent_today_usd == pytest.approx(0.4) and status.unreconciled_usd == pytest.approx(0.4)
@@ -257,6 +379,8 @@ HUGE = json.dumps({"day": "2027-01-14", "spent_usd": 10**310})  # legacy format,
 
 
 @pytest.mark.parametrize("content", [HUGE, json.dumps(VALID | {"outstanding": {"3": 10**400}}),
+                                     json.dumps(VALID | {"version": 3,
+                                                         "outstanding": {"1": {"usd": 0.1, "day": "2099-01-01"}}}),
                                      "[" * 100_000, b"\xff\xfe not text"])
 def test_a_damaged_ledger_never_stops_startup_and_is_quarantined(tmp_path, content) -> None:
     path = tmp_path / "agent_spend.json"
@@ -267,11 +391,13 @@ def test_a_damaged_ledger_never_stops_startup_and_is_quarantined(tmp_path, conte
     assert status.reason == ("Live runs are disabled: the spend ledger was damaged and has been set aside for an "
                              "operator to check. Recorded runs still work.")
     assert len(g.quarantined()) == 1 and not path.exists()
+    g.close()
     # A restart must not start a fresh (under-counting) ledger while the damaged one awaits review.
     again = guard(Clock(), state_path=path)
     assert not again.status("s", live_enabled=True, api_key_present=True).live_available
     assert "waiting for an operator" in again.admit("s") and not path.exists()
     # Once the operator has reviewed and removed it, paid mode can resume.
+    again.close()
     g.quarantined()[0].unlink()
     assert guard(Clock(), state_path=path).status("s", live_enabled=True, api_key_present=True).live_available
 
@@ -310,30 +436,57 @@ def test_a_valid_ledger_loads_and_the_version_1_format_is_migrated(tmp_path) -> 
     path.write_text(json.dumps({"day": TODAY, "spent_usd": 0.9}))
     status = guard(Clock(), state_path=path).status("s", live_enabled=True, api_key_present=True)
     assert status.ledger_ok and status.spent_today_usd == pytest.approx(0.9)
-    assert json.loads(path.read_text())["version"] == 2
-    path.write_text(json.dumps(VALID | {"day": "2027-01-14"}))  # yesterday's figures roll over
+    assert json.loads(path.read_text())["version"] == 3
+    path.write_text(json.dumps(VALID | {"day": "2027-01-14"}))  # yesterday's figures roll over...
     status = guard(Clock(), state_path=path).status("s", live_enabled=True, api_key_present=True)
-    assert status.ledger_ok and status.spent_today_usd == 0
+    # ...but its reservation that never settled is still owed: it carries into today, unreconciled.
+    assert status.ledger_ok and status.spent_today_usd == pytest.approx(0.2)
+    assert status.unreconciled_usd == pytest.approx(0.2)
 
 
-# --------------------------------------------------------------------------- an open fallback set (provider-chosen model)
+# --------------------------------------------------------------------------- one writer, liabilities kept (M5)
 
 
-def test_a_reply_from_an_unlisted_fallback_model_settles_within_its_reservation() -> None:
-    from coldline.agent.loop import input_token_bound
-    from coldline.agent.pricing import PRICES, permitted_models, reservation_usd
+def test_a_second_writer_on_the_same_ledger_is_refused(tmp_path) -> None:
+    """The review's case: two guards on one US$1 ledger each admitted a US$0.60 reservation. The second guard
+    cannot take the writer lock, so it admits nothing and never touches the file."""
+    path = tmp_path / "agent_spend.json"
+    first, second = guard(Clock(), state_path=path), guard(Clock(), state_path=path)
+    first.reserve(0.6)
+    assert "another process is already using the spend ledger" in second.admit("s")
+    with pytest.raises(BudgetExceeded):
+        second.reserve(0.6)
+    assert json.loads(path.read_text())["outstanding"] == {"1": {"usd": 0.6, "day": TODAY}}
+    first.close()  # once the first process stops, a new one can take over and counts what it left open
+    third = guard(Clock(), state_path=path)
+    assert third.status("s", live_enabled=True, api_key_present=True).spent_today_usd == pytest.approx(0.6)
 
-    bound = input_token_bound([], [{"role": "user", "content": "x" * 20_000}])
-    reserved = reservation_usd(permitted_models("claude-sonnet-5-5", server_fallback=True), bound, 3000)
-    unlisted = "claude-some-future-model"
-    assert unlisted not in PRICES and price_for(unlisted) == CONSERVATIVE
-    worst = cost_usd(unlisted, Usage(cache_creation_input_tokens=bound, output_tokens=3000))
-    assert worst <= reserved + 1e-9
-    # Near the cap: the reservation fits, and settling the unlisted model's real cost keeps spend under it.
-    g = guard(Clock(), daily_cap_usd=reserved + 0.01, min_call_reserve_usd=0.0)
-    g.settle(g.reserve(reserved), worst)
+
+def test_a_restart_after_midnight_keeps_yesterdays_open_reservation(tmp_path) -> None:
+    clock = Clock()
+    path = tmp_path / "agent_spend.json"
+    g = guard(clock, state_path=path)
+    g.reserve(0.25)  # the process stops mid-call, just before midnight
+    g.close()
+    clock.t += 86_400
+    status = guard(clock, state_path=path).status("s", live_enabled=True, api_key_present=True)
+    assert status.spent_today_usd == pytest.approx(0.25) and status.unreconciled_usd == pytest.approx(0.25)
+
+
+def test_a_reservation_open_at_midnight_settles_against_the_day_it_settles(tmp_path) -> None:
+    """The uninterrupted process and the restarted one agree: an open liability counts on the day it
+    resolves, and the journal keeps the day it was reserved for the operator."""
+    clock = Clock()
+    path = tmp_path / "agent_spend.json"
+    g = guard(clock, state_path=path)
+    r = g.reserve(0.3)
+    clock.t += 86_400
+    assert json.loads(path.read_text())["outstanding"]["1"]["day"] == TODAY
     status = g.status("s", live_enabled=True, api_key_present=True)
-    assert status.spent_today_usd <= reserved + 0.01 and status.live_available
+    assert status.spent_today_usd == 0 and status.reserved_usd == pytest.approx(0.3)  # still counted
+    g.settle(r, 0.1)
+    ledger = json.loads(path.read_text())
+    assert ledger["day"] > TODAY and ledger["spent_usd"] == pytest.approx(0.1) and ledger["outstanding"] == {}
 
 
 def test_a_settlement_above_its_reservation_switches_live_runs_off() -> None:

@@ -219,6 +219,19 @@
 .doc .prose { max-width: 70ch; font-size: 15px; line-height: 1.65; }
 .doc-meta { display: flex; gap: var(--s-4); flex-wrap: wrap; color: var(--text-3); font-size: var(--fs-sm); padding-bottom: var(--s-4); margin-bottom: var(--s-2); border-bottom: 1px solid var(--line); }
 @media (max-width: 720px) { .doc { padding: var(--s-4); } }
+/* note sections: the code-owned disposition and checks, and the model's narrative set apart between them */
+.ho-sec { margin: 0 0 var(--s-4); }
+.ho-sec--narrative { margin-left: var(--s-1); padding: var(--s-1) 0 var(--s-1) var(--s-4); border-left: 3px solid var(--line-strong); color: var(--text-3); font-size: 0.95em; }
+.ho-sec--narrative strong { color: var(--text-2); }
+.ho-sec--narrative > p:first-child strong { color: var(--text-3); font-weight: var(--fw-semibold); letter-spacing: 0.01em; }
+/* superseded snapshot: inside the copy target, so a copied note carries it too */
+.ho-banner--superseded { border: 1px solid var(--amber-line); background: var(--amber-weak); border-radius: var(--r-2); padding: var(--s-3) var(--s-4); margin: 0 0 var(--s-4); color: var(--text-1); }
+.ho-banner--superseded p { margin: 0 0 var(--s-2); }
+.ho-banner--superseded ul { margin-bottom: var(--s-3); }
+.ho-banner--superseded p:first-child b { color: var(--amber); }
+.ho-now { margin: 0; padding-left: 1.2em; font-size: var(--fs-sm); color: var(--text-2); }
+.ho-now li { margin-bottom: 6px; }
+.ev-table .d--now { color: var(--amber); }
 
 /* ------------------------------------------------------------------ how it works */
 .arch { width: 100%; height: auto; font-family: var(--font-ui); }

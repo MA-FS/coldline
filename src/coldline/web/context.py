@@ -6,15 +6,18 @@ thin. Everything here reads through :class:`~coldline.contracts.PlantSystems` an
 
 from __future__ import annotations
 
+import hashlib
+import json
 import statistics
 from typing import Any
 
 from markupsafe import Markup
 
-from coldline.agent import AgentService, load_eval_results
+from coldline.agent import AgentService, handover, load_eval_results
 from coldline.contracts import (
     Alarm,
     AlarmPriority,
+    Approval,
     ApprovalStatus,
     AssetKind,
     EvalResult,
@@ -26,12 +29,12 @@ from coldline.contracts import (
     Scenario,
     StepKind,
     Trend,
-    WorkOrder,
 )
+from coldline.records import describe_records
 from coldline.web.charts import ChartEvent, Series, trend_svg
 from coldline.web.render import base_context, hhmm
 from coldline.web.runtime import ROLES, Runtime, Visitor
-from coldline.web.views import chiller_detail, citations, evidence_kind, fmt_value, plant_view, probe_tags
+from coldline.web.views import chiller_detail, citations, plant_view, probe_tags
 
 CHILLER_NAMEPLATE = {"capacity_carcases": 160, "status": "In service"}
 FINISHED = {RunStatus.DONE, RunStatus.AWAITING_APPROVAL, RunStatus.INCOMPLETE, RunStatus.FAILED}
@@ -52,7 +55,7 @@ def shell(rt: Runtime, v: Visitor, active: str, title: str) -> dict[str, Any]:
         pending_approvals=pending,
         live_available=status.live_available,
     )
-    ctx.update(live_status=status, role=v.prefs.role, roles=ROLES)
+    ctx.update(live_status=status, role=v.prefs.role, roles=ROLES, session_notice=v.prefs.notice)
     return ctx
 
 
@@ -116,6 +119,22 @@ def detail_context(plant: PlantSystems, focus: str | None,
     return pv, detail
 
 
+def state_revision(plant: PlantSystems, run: RunTrace | None, approvals: list[Approval]) -> str:
+    """A short fingerprint of what the overview's regions show: the incident (faults and resets), the latest run
+    and its status, every proposal's status, the active holds and which probes are not reporting fresh data.
+    The mimic's 5-second poll carries it; when it differs from the page's, the page re-renders as a whole, so
+    a tab left open never shows one investigation's conclusion and decisions beside another's plant."""
+    snap = plant.snapshot()
+    material = {
+        "incident": snap.incident,
+        "run": [run.run_id, run.status.value] if run else None,
+        "approvals": sorted([a.id, a.status.value] for a in approvals),
+        "holds": sorted(h.id for h in plant.active_holds()),
+        "not_fresh": sorted(t for t, r in snap.latest.items() if r.quality != Quality.GOOD),
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()[:12]
+
+
 def overview(rt: Runtime, v: Visitor) -> dict[str, Any]:
     run = latest_run(rt, v.sid)
     pv, detail = detail_context(v.plant, v.prefs.focus, run)
@@ -134,88 +153,16 @@ def overview(rt: Runtime, v: Visitor) -> dict[str, Any]:
         "expired": expired,
         "scenarios": list(Scenario),
         "poll_url": "/",
+        "rev": state_revision(v.plant, run, every),
     }
 
 
 # --------------------------------------------------------------------------- evidence
 
 
-def _work_orders(plant: PlantSystems) -> dict[str, WorkOrder]:
-    out: dict[str, WorkOrder] = {}
-    for asset in plant.snapshot().assets:
-        for wo in plant.find_work_orders(asset.id, open_only=False):
-            out[wo.id] = wo
-    return out
-
-
 def evidence_refs(plant: PlantSystems, agent: AgentService, sid: str, ids: list[str]) -> dict[str, EvidenceRef]:
     """Describe each cited record from the visitor's current systems, for evidence tables and citations."""
-    out: dict[str, EvidenceRef] = {}
-    snap = plant.snapshot()
-    assets = {a.id: a for a in snap.assets}
-    tag_owner = {t: a for a in snap.assets for t in a.tags}
-    orders: dict[str, WorkOrder] | None = None
-    alarms = {a.id: a for a in plant.list_alarms(active_only=False)}
-    inbox = {m.id: m for m in plant.inbox()}
-    approvals = {a.id: a for a in agent.list_approvals(sid)}
-    for rid in ids:
-        kind, label = evidence_kind(rid)
-        ref: EvidenceRef | None = None
-        try:
-            if rid in tag_owner:
-                reading = plant.latest([rid])[rid]
-                desc = plant.get_trend([rid], 0)[0].description
-                state = "STALE" if reading.quality == Quality.STALE else reading.quality.value.upper()
-                ref = EvidenceRef(
-                    id=rid,
-                    kind="tag",
-                    title=desc,
-                    detail=f"{fmt_value(reading.value_c)} °C · {state} · {hhmm(reading.ts)}",
-                )
-            elif rid in assets:
-                a = assets[rid]
-                state = ""
-                if a.kind == AssetKind.COMPRESSOR:
-                    state = a.state or ("run" if a.running else "standby")
-                ref = EvidenceRef(id=rid, kind="asset", title=a.name, detail=state or a.zone.replace("_", " "))
-            elif kind == "lot":
-                lot = plant.get_lot(rid)
-                ref = EvidenceRef(
-                    id=rid,
-                    kind="lot",
-                    title=f"Lot, {lot.carcases} carcases",
-                    detail=f"{lot.customer} · {lot.status.value} · due {hhmm(lot.dispatch_due)}",
-                    version=lot.version,
-                )
-            elif kind == "wo":
-                orders = orders if orders is not None else _work_orders(plant)
-                if rid in orders:
-                    wo = orders[rid]
-                    ref = EvidenceRef(
-                        id=rid,
-                        kind="wo",
-                        title=wo.title,
-                        detail=f"{wo.status} · {wo.asset_id} · created {wo.created_at:%d %b}",
-                        version=wo.version,
-                    )
-            elif rid in alarms:
-                a = alarms[rid]
-                ref = EvidenceRef(
-                    id=rid,
-                    kind="alarm",
-                    title=a.description,
-                    detail=f"{a.priority.value.upper()} · {hhmm(a.ts)} · {'active' if a.active else 'cleared'}",
-                )
-            elif rid in inbox:
-                m = inbox[rid]
-                ref = EvidenceRef(id=rid, kind="msg", title=f"{m.subject} (untrusted)", detail=m.sender)
-            elif rid in approvals:
-                ap = approvals[rid]
-                ref = EvidenceRef(id=rid, kind="approval", title=ap.title, detail=ap.status.value)
-        except (KeyError, ValueError, IndexError):
-            ref = None
-        out[rid] = ref or EvidenceRef(id=rid, kind=kind, title=label)
-    return out
+    return describe_records(plant, {a.id: a for a in agent.list_approvals(sid)}, ids)
 
 
 def evidence_dict(refs: dict[str, EvidenceRef]) -> dict[str, dict[str, Any]]:
@@ -293,10 +240,17 @@ def eval_rows(data: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]],
                 "category": r.category,
             }
         )
+    # Cost and latency medians over one population only: the scenario cases, one per shipped recording. The
+    # approval cases replay those same recordings and the adversarial ones use scripted models with no tokens,
+    # so mixing them in would count one recording several times and add zeros.
+    scenario = [r for r in rows if r["category"] == "scenario"]
     meta = {
         "generated_at": data.get("generated_at"),
         "mode": data.get("mode"),
         "summary": data.get("summary", {}),
+        "median_n": len(scenario),
+        "median_cost": statistics.median(r["cost_usd"] for r in scenario) if scenario else None,
+        "median_latency": statistics.median(r["latency_ms"] for r in scenario) if scenario else None,
     }
     return rows, meta
 
@@ -467,3 +421,43 @@ def handover_run(rt: Runtime, sid: str, run_id: str | None) -> RunTrace | None:
     if run_id:
         return next((r for r in runs if r.run_id == run_id), None)
     return next((r for r in runs if r.handover_note), None)
+
+
+def handover_context(rt: Runtime, v: Visitor, run: RunTrace | None) -> dict[str, Any]:
+    """The Handover page: the run's note as the snapshot it is, how the plant differs now, and the current
+    holds and proposals (shown on every visit, including while an investigation is running or after one
+    ended without a handover).
+
+    ``sources`` has one row per cited record: its description when the note was accepted (``then``) and,
+    where that differs, how it reads now (``now``), so the table can never contradict the note beside it."""
+    runs = rt.agent.list_runs(v.sid)
+    approvals = rt.agent.list_approvals(v.sid)
+    ctx: dict[str, Any] = {
+        "run": run,
+        "latest": runs[0] if runs else None,
+        "current": handover.current_lines(v.plant, approvals),
+        "plant_now": v.plant.now(),
+        "sup": None,
+        "sources": [],
+    }
+    if run is None or not run.handover_note:
+        return ctx
+    later = runs[: next((i for i, r in enumerate(runs) if r.run_id == run.run_id), 0)]
+    sup = handover.supersession(run, v.plant, approvals, later)
+    then = (run.extra.get("handover_snapshot") or {}).get("sources", {})
+    ids = citations(run.handover_note)
+    now = evidence_dict(evidence_refs(v.plant, rt.agent, v.sid, ids))
+    rows = []
+    for rid in ids:
+        before, after = then.get(rid), now.get(rid, {})
+        base = before or after
+        detail_now = after.get("detail") or ""
+        rows.append({
+            "id": rid,
+            "title": base.get("title") or "",
+            "then": (before or {}).get("detail") or "",
+            "now": detail_now if before is None or detail_now != before.get("detail") else "",
+            "has_then": before is not None,
+        })
+    ctx.update(sup=sup, sources=rows)
+    return ctx

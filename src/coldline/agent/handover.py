@@ -1,6 +1,7 @@
 """Handover integrity: the note a person reads, copies and acts on cannot contradict what code enforces.
 
-The note ``write_handover_note`` accepts has three sections, in this order:
+The note ``write_handover_note`` accepts opens with its snapshot label (:func:`snapshot_label`: the run and
+the plant time it describes), then has three sections, in this order:
 
 1. **Disposition** (:func:`disposition_block`), composed in code from the sandbox at handover time: the
    evidence headline (:func:`~coldline.agent.evidence.code_conclusion`) and its confidence, the fixed rule
@@ -15,9 +16,19 @@ The note ``write_handover_note`` accepts has three sections, in this order:
    belong to section 1) and every sentence the checks contradict: a cause while the evidence is uncertain,
    a claim that something was released or approved, an empty inbox, no alarms or nothing pending when that
    is false. What it leaves out is listed in the trace and ``run.extra["gate"]["removed"]``. The filter is
-   a courtesy to the reader, not the safety mechanism: section 1 does not depend on it.
+   a courtesy to the reader, not the safety mechanism: section 1 does not depend on it. Headings the model
+   wrote are demoted to labelled lines ("Agent narrative · ..."), so nothing in it can pass for a section
+   composed in code, on screen or in a copied note.
 3. **Checks computed in code** (:func:`verified_block`): alarms, the evidence check per chiller, work
    orders and permit drafts, decided proposals, untrusted input, and what was left out of the narrative.
+
+**A note is a snapshot.** It states the plant as it was when the note was accepted, and it never changes
+afterwards. :func:`capture` stores, with the note, the code-owned state its disposition was composed from
+(holds, lot status and dispatch times, proposal status, the incident generation) and a description of every
+record it cites. :func:`supersession` compares that with the plant now: when anything changed, or a later
+investigation started, the Handover page shows the note under a "superseded" banner that lists the changes
+and the current holds and proposals, inside the text "Copy as text" copies. An old note can be read and
+copied as a record of what the agent saw, never as the current disposition.
 
 :func:`facts` summarises, without record ids that change between sandboxes, what the run observed and did.
 A replay compares it with the recording's summary (:func:`differences`); when they differ the recorded
@@ -27,12 +38,35 @@ narrative described another plant, so section 2 is replaced by a replay notice c
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from coldline.agent.approvals import APPROVER_ROLES
-from coldline.agent.evidence import CAUSE_CLAIM, UNCERTAIN, Assessment, Verdict, code_conclusion, evidence_cap
-from coldline.contracts import ApprovalStatus, InboxMessage, Lot, LotStatus, QAHold, StepKind, Tier, WorkOrder
+from coldline.agent.evidence import (
+    CAUSE_CLAIM,
+    UNCERTAIN,
+    Assessment,
+    Verdict,
+    code_conclusion,
+    evidence_cap,
+    extract_citations,
+)
+from coldline.contracts import (
+    Approval,
+    ApprovalStatus,
+    InboxMessage,
+    Lot,
+    LotStatus,
+    PlantSystems,
+    QAHold,
+    RunTrace,
+    StepKind,
+    Tier,
+    WorkOrder,
+)
+from coldline.records import describe_records
 
 if TYPE_CHECKING:
     from coldline.agent.context import RunContext
@@ -84,7 +118,12 @@ _NOTHING_PENDING = re.compile(
     r"\b(awaiting|waiting for|pending)\s+approval\s*:?\**\s*(nothing|none)\b"
     r"|\b(nothing|none|no proposals?)\b[^.;]{0,20}\b(awaiting|waiting|pending)\b"
 )
-_RESERVED = re.compile(r"\b(set|computed|composed)\s+in\s+code\b|\bnot\s+by\s+the\s+model\b")
+# Wording that names a section composed in code ("Checks computed in code", "verified checks"): the narrative
+# may not imitate one, as a heading or as a sentence.
+_RESERVED = re.compile(
+    r"\b(set|computed|composed|verified)\s+(in|by)\s+code\b|\bnot\s+by\s+the\s+model\b"
+    r"|\bverified\s+checks?\b|\bchecks?\s+(computed|verified)\b|\bcode[- ]verified\b"
+)
 
 DECISION_REASON = "a product, hold or approval decision, which the lines set in code state from the records"
 
@@ -423,6 +462,24 @@ def verified_block(ctx: RunContext, assessments: list[Assessment], removed: list
     return VERIFIED_HEADING + "\n" + "\n".join(lines)
 
 
+NARRATIVE_SUBHEAD = "Agent narrative · "
+
+
+def demote_headings(notes: str) -> str:
+    """Model-written headings become labelled lines, so the narrative has no heading of its own that could
+    read as a section composed in code (on screen, or in a copied note where formatting is lost)."""
+    out = []
+    for line in notes.splitlines():
+        m = _HEADING.match(line)
+        out.append(NARRATIVE_SUBHEAD + line[m.end():].strip().strip("*").strip() if m else line)
+    return "\n".join(out)
+
+
+def snapshot_label(run_id: str, at: datetime) -> str:
+    """The note's first line: which run it is and the plant time it describes."""
+    return f"**Handover {run_id} · snapshot as at {at:%a %-d %b %Y, %H:%M} (plant time)**"
+
+
 def replay_notice(diffs: list[str]) -> str:
     return ("**Replay note:** this replay ran against a plant that differs from the recorded run ("
             + "; ".join(diffs[:3]) + "), so the recorded narrative is not reused. Everything in this handover is "
@@ -435,12 +492,151 @@ def compose(ctx: RunContext, assessments: list[Assessment], draft: str,
     The model's draft feeds the narrative only."""
     s = situation(ctx, assessments)
     removed: list[dict[str, str]] = []
-    parts = [disposition_block(ctx, assessments)]
+    parts = [snapshot_label(ctx.run.run_id, ctx.systems.now()), disposition_block(ctx, assessments)]
     if diffs:
         parts.append(replay_notice(diffs))
     else:
         notes, removed = sanitize(draft.strip(), s)
         if notes:
-            parts.append(NARRATIVE_HEADING + "\n\n" + notes)
+            parts.append(NARRATIVE_HEADING + "\n\n" + demote_headings(notes))
     parts.append(verified_block(ctx, assessments, removed))
     return "\n\n".join(parts), removed
+
+
+# --------------------------------------------------------------------------- the note as a snapshot
+
+
+def disposition_state(systems: PlantSystems, lot_ids: Iterable[str], approvals: Iterable[Approval]) -> dict:
+    """The code-owned state a disposition is composed from, comparable between then and now: every listed or
+    held lot's status, active hold and dispatch time, each proposal's status, and the incident generation."""
+    holds = {h.lot_id: h.id for h in systems.active_holds()}
+    lots: dict[str, dict[str, Any]] = {}
+    for lot_id in dict.fromkeys([*lot_ids, *holds]):
+        try:
+            lot = systems.get_lot(lot_id)
+        except KeyError:
+            continue
+        lots[lot.id] = {"status": lot.status.value, "hold": holds.get(lot.id),
+                        "due": lot.dispatch_due.isoformat() if lot.dispatch_due else None}
+    return {"incident": systems.snapshot().incident, "lots": lots,
+            "approvals": {a.id: a.status.value for a in approvals}}
+
+
+_CITED = re.compile(r"\[([A-Z][A-Z0-9]*-[A-Za-z0-9.\-]+)\]")
+
+
+def cited_ids(note: str) -> list[str]:
+    return list(dict.fromkeys([*extract_citations(note), *_CITED.findall(note)]))
+
+
+def capture(ctx: RunContext, note: str) -> dict[str, Any]:
+    """What the accepted note was composed from, stored with it (``run.extra["handover_snapshot"]``)."""
+    lots = [lot.id for lot, _ in disposition_lots(ctx)]
+    approvals = {a.id: a for a in ctx.approvals.list_all()}
+    sources = describe_records(ctx.systems, approvals, cited_ids(note))
+    return {
+        "at": ctx.systems.now().isoformat(),
+        "state": disposition_state(ctx.systems, lots, ctx.run.approvals),
+        "sources": {rid: ref.model_dump(include={"title", "detail", "version"}) for rid, ref in sources.items()},
+    }
+
+
+def _due(raw: str | None) -> str:
+    return datetime.fromisoformat(raw).strftime("%H:%M") if raw else "no dispatch time"
+
+
+def changes_since(then: dict, now: dict, approvals: dict[str, Approval]) -> list[str]:
+    """Readable clauses for what changed in the code-owned state since the note was accepted."""
+    out = []
+    if then.get("incident") != now.get("incident"):
+        out.append("A fault was injected or the plant was reset after this note.")
+    before, after = then.get("lots", {}), now.get("lots", {})
+    for lot_id in sorted(set(before) | set(after)):
+        a, b = before.get(lot_id), after.get(lot_id)
+        if a == b:
+            continue
+        if b is None:
+            out.append(f"[{lot_id}] no longer exists.")
+            continue
+        a = a or {}
+        if a.get("hold") != b.get("hold"):
+            if b.get("hold") and not a:
+                out.append(f"[{lot_id}] is now on QA hold [{b['hold']}]; this note does not list it.")
+            elif b.get("hold") and not a.get("hold"):
+                out.append(f"[{lot_id}] is now on QA hold [{b['hold']}]; this note shows it not on hold.")
+            elif not b.get("hold"):
+                out.append(f"QA hold [{a['hold']}] on [{lot_id}] is no longer active.")
+            else:
+                out.append(f"[{lot_id}] is now on QA hold [{b['hold']}]; this note names [{a['hold']}].")
+        if b.get("status") == LotStatus.DISPATCHED.value and a.get("status") != b.get("status"):
+            out.append(f"[{lot_id}] has been dispatched.")
+        if a and a.get("due") != b.get("due"):
+            out.append(f"[{lot_id}] is now due {_due(b.get('due'))}; this note says {_due(a.get('due'))}.")
+    for approval_id, status in then.get("approvals", {}).items():
+        ap = approvals.get(approval_id)
+        current = ap.status.value if ap else "no longer in this session"
+        if current != status:
+            who = f" by {ap.decided_by}" if ap and ap.decided_by else ""
+            out.append(f"[{approval_id}] is now {current}{who}; this note shows it {status.replace('_', ' ')}.")
+    return out
+
+
+def current_lines(systems: PlantSystems, approvals: Iterable[Approval]) -> list[str]:
+    """The disposition that holds now, from the same templates: every held lot, then what waits for a person."""
+    lines = []
+    for hold in systems.active_holds():
+        try:
+            lot = systems.get_lot(hold.lot_id)
+        except KeyError:
+            continue
+        lines.append(lot_line(lot, hold.id, None))
+    if not lines:
+        lines.append("No lot is on QA hold.")
+    pending = [a for a in approvals if a.status == ApprovalStatus.PENDING]
+    if pending:
+        lines.append("Waiting for a person's decision: " + "; ".join(
+            f"[{a.id}] {a.title} ({' or '.join(APPROVER_ROLES.get(a.action, ()))})" for a in pending) + ".")
+    else:
+        lines.append("Waiting for approval: nothing.")
+    return lines
+
+
+@dataclass
+class Supersession:
+    """How a stored note relates to the plant now. ``superseded`` when anything it states has changed or a
+    later investigation started; ``changes`` and ``later`` say what, and ``current`` is the disposition now."""
+
+    at: datetime | None
+    changes: list[str] = field(default_factory=list)
+    later: str = ""
+    later_run: str = ""
+    current: list[str] = field(default_factory=list)
+
+    @property
+    def superseded(self) -> bool:
+        return bool(self.changes or self.later)
+
+
+def supersession(run: RunTrace, systems: PlantSystems, approvals: list[Approval],
+                 later_runs: list[RunTrace]) -> Supersession:
+    """Compare a run's stored note with the plant now (``later_runs``: this session's runs started after it,
+    newest first)."""
+    snap = run.extra.get("handover_snapshot") or {}
+    by_id = {a.id: a for a in approvals}
+    then = snap.get("state") or {}
+    now = disposition_state(systems, then.get("lots", {}), approvals)
+    changes = changes_since(then, now, by_id) if then else ["This note has no stored snapshot to compare with."]
+    later, later_run = "", ""
+    if later_runs:
+        newest = later_runs[0]
+        later_run = newest.run_id
+        if newest.handover_note:
+            later = f"A later investigation, {newest.run_id}, wrote a newer handover."
+        elif newest.status.value == "running":
+            later = f"A later investigation, {newest.run_id}, is running now."
+        else:
+            later = (f"A later investigation, {newest.run_id}, ended without a handover "
+                     f"({newest.status.value.replace('_', ' ')}).")
+    at = datetime.fromisoformat(snap["at"]) if snap.get("at") else None
+    return Supersession(at=at, changes=changes, later=later, later_run=later_run,
+                        current=current_lines(systems, approvals))

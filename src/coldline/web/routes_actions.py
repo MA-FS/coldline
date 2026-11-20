@@ -76,6 +76,7 @@ async def inject(request: Request, v: V, rt: RT, scenario: Annotated[str, Form()
     admit_control(rt, v)
     v.plant.inject(s)
     v.prefs.focus = None
+    v.prefs.notice = ""  # the visitor has started something new on their fresh plant
     expired = rt.agent.revalidate_approvals(v.sid, v.plant)  # a new incident retires older proposals
     v.prefs.recent_expired = {a.id for a in expired}
     _, text = await start_investigation(rt, v, s)
@@ -124,6 +125,7 @@ async def reset(request: Request, v: V, rt: RT) -> HTMLResponse:
     rt.sessions.reset(v.sid, origin=v.ip)
     rt.agent.forget_session(v.sid, keep_numbering=True)  # the audit trail survives a reset; ids must not repeat
     v.prefs.focus = None
+    v.prefs.notice = ""
     v.prefs.recent_expired.clear()
     return render_overview(request, rt, v, toast("Plant reset", "Faults, holds, runs and approvals cleared.", "ok"))
 

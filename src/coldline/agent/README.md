@@ -58,7 +58,7 @@ trigger (alarms, code-side historian screen, inbox count)
   -> model call (cached tools + system prompt)          THINK step: note, tokens, cost, latency
   -> each tool call goes through ToolRegistry.execute   TOOL / GUARDRAIL steps
   -> all tool results go back in one user turn
-  -> repeat until write_handover_note is accepted, or a bound is hit
+  -> repeat until write_handover_note is accepted (a later call in the same turn is refused), or a bound is hit
   -> finalize: conclusion step, totals, status (awaiting_approval if anything is pending)
 ```
 
@@ -115,10 +115,13 @@ GUARDRAIL step and an audit event. Unknown names are refused the same way, with 
 | Handover rejected if it cites an id no tool returned | `write_handover_note` |
 | Confidence capped by the evidence; uncertain verdicts get a fixed headline | `evidence.gate_conclusion` |
 | The handover's disposition (holds, shipping, proposals waiting, required follow-ups) is composed in code; the model's notes may not state those decisions and lose sentences the checks contradict | `handover.py` |
+| The accepted handover is final: a tool call after it in the same model turn is refused, not run | `run_loop`, `refuse_after_handover` |
 | A run without an accepted handover is marked `incomplete`, never shown as a finished investigation | `loop.finalize` |
 | A run that read suspected injection text cannot propose hold releases, cannot use that text as justification, and must say so in its conclusion | `tools.py` |
+| A hold release is proposed only on verified clearance (both probes fresh, agreeing and within the limit for 30 min, all after the hold was placed), re-checked when QA decides | `evidence.release_clearance`, `propose_release_qa_hold` |
 | Approvals expire if their evidence changed (records, probe quality, verdict, incident) or the action's precondition no longer holds; execute exactly once; approve and decline need the same role; the agent cannot decide | `ApprovalStore` |
-| An upper bound on every call's cost reserved and journalled before the call; unknown outcomes keep the reservation | `budget.py`, `loop.py` |
+| An upper bound on every call's cost (every attempt the request allows, fallback included) reserved and journalled before the call; settled at every attempt the response reports; unknown outcomes keep the reservation | `budget.py`, `loop.py`, `pricing.py` |
+| Trace headings are fixed labels and canonical ids; a name or title the model supplied is a labelled detail | `tools.py`, `records.py` |
 
 ## Evidence checks
 
@@ -139,7 +142,8 @@ handover time.
 ## Handover integrity
 
 What a person reads, and copies with "Copy as text", cannot contradict what code enforces (`handover.py`).
-The note has three sections, in this order:
+The note opens with its snapshot label ("Handover R-7841 · snapshot as at Sat 21 Nov 2026, 06:02 (plant
+time)") and has three sections, in this order:
 
 1. **Disposition (set in code from the plant records)**: the evidence headline and its confidence
    (`evidence.code_conclusion`), the fixed rule "Product disposition: QA decision. Held lots stay held until
@@ -159,13 +163,28 @@ The note has three sections, in this order:
    it from the records), and sentences the checks contradict are removed: a cause stated while the verdict
    is uncertain, a claim that something was released or approved, an empty inbox that is not, no alarms
    while alarms are active, nothing awaiting approval while proposals are pending, or text imitating a
-   code section. Everything left out is listed in the trace and in `run.extra["gate"]["removed"]`. This
-   filter only tidies the narrative; section 1 does not depend on it.
+   code section (including "verified checks" and similar). Everything left out is listed in the trace and in
+   `run.extra["gate"]["removed"]`. Headings the model wrote become labelled lines ("Agent narrative ·
+   Observations"), and the page renders the section in its own indented container with no heading elements,
+   so nothing in it can pass for a code section on screen or in a copied note. This filter only tidies the
+   narrative; section 1 does not depend on it.
 3. **Checks computed in code (not by the model)**: active alarms, the evidence check per chiller, work
    orders and permit drafts, decided proposals, and what the run did with any untrusted input (derived from
    its recorded steps, not asserted).
 
 Replays also check they are describing the same plant. See "Replay and live".
+
+**Each note is a snapshot, and never changes.** With the note, `write_handover_note` stores
+`run.extra["handover_snapshot"]`: the plant time, the code-owned state its disposition was composed from
+(every listed or held lot's status, hold and dispatch time, each proposal's status, the incident generation)
+and a description of every record it cites (`records.describe_records`). The Handover page compares that with
+the plant now (`handover.supersession`). If anything changed, or a later investigation started, the note is
+shown under a "Superseded" banner that lists the changes and the current holds and proposals, inside the copy
+target, so a copied old note always says it is not the current disposition. The banner refreshes itself every
+10 s, so a tab left open learns of later changes (or that its run is gone after a reset). The page always
+shows "Now on the plant" (current holds and proposals, from the same templates), including while an
+investigation is running or after one ended without a handover, and the sources table shows each record as it
+was when the note was accepted, with how it reads now where that differs.
 
 ## Approvals
 
@@ -182,11 +201,21 @@ of these. On approve, inside one sandbox transaction:
 1. Already approved: no-op ("not executed again"). Not pending: nothing happens.
 2. Actor must hold an approver role, matched exactly (`Shift Supervisor` for dispatch and amendments,
    `QA Manager` for hold releases). `agent` and `system` are always refused. Decline needs the same role.
-3. Evidence re-read and the action's precondition re-checked (a new dispatch time must still be ahead).
-   Any change: `EXPIRED` with the reason in `approval.note`, audited, nothing runs. This is how "make the
-   reference probe stale" or injecting a new fault retires proposals made on the earlier evidence.
+3. Evidence re-read and the action's precondition re-checked: a new dispatch time must still be ahead, and a
+   hold release must still have verified clearance (`evidence.release_clearance`: the lot's two probes fresh
+   and good, sampled every minute for the last 30 min, all after the hold was placed, agreeing within 2 °C
+   and at or below the 5 °C limit throughout). What the model says it saw is never evidence; a release that
+   lacks clearance is refused before a proposal exists. Any change: `EXPIRED` with the reason in
+   `approval.note`, audited, nothing runs. This is how "make the reference probe stale" or injecting a new
+   fault retires proposals made on the earlier evidence.
 4. Execute once (guarded by the idempotency key), set `APPROVED`, write the `approve` audit event, all under
    one lock. A failure during execution (for example a work-order version conflict) also ends as `EXPIRED`.
+
+Each approval carries `change`, the exact change that runs on approval, composed in code (the dispatch date
+and plant-local time, the exact note to append, the hold to release), and `checks`, what code verified when
+it was proposed. Cards show both before the Approve button, with the model's `rationale` labelled
+"model-written, not verified" and kept apart; the compact cards on the overview link to the full proposal. A
+clock time that has already passed is scheduled for the next day, and the card then names the day.
 
 `revalidate_approvals()` runs step 3 for every pending approval without executing anything. It runs after
 every fault injection, stale probe, decision and finished run, so expiry shows as soon as evidence changes.
@@ -245,8 +274,9 @@ check; it must read correctly whatever else the visitor has done in their sandbo
 many live runs are in flight, or the daily cap is reached. A live run that fails part-way (API error,
 timeout, refusal, budget) also continues as replay in the same run, keeping the run's context: what the
 live part created is reused rather than repeated, and anything it flagged stays flagged. Server-side
-fallback (`fallbacks: "default"`) is on, so a request the model declines can be retried by the API on
-another model; reservations are priced for the most expensive model that might answer.
+fallback is on with a named fallback model (`claude-sonnet-5` for `claude-sonnet-5-5`, each attempt capped
+at the same output limit), so a request the model declines can be retried by the API on that model inside
+the same call. Both attempts are reserved and both are settled (see "Cost control").
 
 To re-record after a prompt or tool change: `uv run python -m evals.record` (needs `ANTHROPIC_API_KEY`;
 about US$0.15 for all four live recordings). Each recording must pass its scenario eval before it is saved.
@@ -261,14 +291,19 @@ carry the `prompt_version` they were made with.
 | Daily cap (all visitors, UTC day) | US$3.00 | `COLDLINE_DAILY_USD_CAP` |
 | Live runs per session per hour | 3 | `COLDLINE_SESSION_RUNS_PER_HOUR` |
 | Live runs per client address per day | 6 | `COLDLINE_ORIGIN_RUNS_PER_DAY` |
-| Concurrent live runs | 2 | `COLDLINE_MAX_CONCURRENT_LIVE` |
+| Concurrent live runs (all / per client address) | 2 / 1 | `COLDLINE_MAX_CONCURRENT_LIVE`, `COLDLINE_ORIGIN_CONCURRENT_LIVE` |
+| One client address's share of the daily cap | US$1.00 | `COLDLINE_ORIGIN_DAILY_USD_CAP` |
 | Model calls per run | 8 | `COLDLINE_MAX_MODEL_CALLS` |
 | Output tokens per call | 3000 | `COLDLINE_MAX_TOKENS_PER_CALL` |
 | Run / call timeout | 90 s / 40 s | `COLDLINE_RUN_TIMEOUT_S`, `COLDLINE_CALL_TIMEOUT_S` |
 
-Before each call the loop reserves an upper bound: one token per input byte (a token always covers at
-least one byte) at the cache-write rate of the most expensive model that may answer, plus the full output
-limit. The SDK does not retry, so one reservation covers one attempt. The reservation is written to the
+Before each call the loop reserves an upper bound: for every attempt the request allows (the model, then
+each named fallback), one token per input byte (a token always covers at least one byte, and a fallback may
+also read the declined attempt's partial output) at that model's cache-write rate, plus the full output
+limit. The SDK does not retry. After the call, every attempt the response reports in `usage.iterations` is
+settled at its own model's rate (the top-level usage covers only the attempt that answered); an attempt that
+names no model is the requested model's when only one fallback is named, and is otherwise priced at the most
+expensive model allowed. The reservation is written to the
 ledger before the call and settled afterwards: at the real cost, at zero for an API error, or kept in full
 (as `unreconciled_usd`) when the outcome is unknown (timeout, lost connection, cancellation). The ledger is
 `$COLDLINE_DATA_DIR/agent_spend.json`, replaced atomically on every change. A reservation left behind by a
@@ -276,17 +311,26 @@ stopped process counts as spent on restart. If the ledger cannot be read or writ
 (version and fields, a real date not in the future, finite non-negative amounts), live runs are disabled
 with a visible reason; startup and replay are never affected. A file that fails validation is quarantined
 (renamed to `agent_spend.json.quarantined-<UTC time>`, contents untouched), and live runs stay off across
-restarts until an operator reviews it and removes the quarantined copy. With server-side fallback
-(`fallbacks: "default"`) the provider picks the fallback model, so reservations are priced at the
-conservative rate used for unlisted models; that rate is the supported ceiling, and a settlement above its
-reservation switches live runs off. Each run records its attempted calls (`live_calls`) and any spend whose
+restarts until an operator reviews it and removes the quarantined copy. Fallback models are named (never
+`"default"`), so the attempts and their prices are known before the call; a settlement above its reservation
+(a response reporting attempts the request did not allow, or a price above `PRICES`) switches live runs off.
+One process writes the ledger: a guard holds `agent_spend.json.lock` for its lifetime, and a second guard on
+the same data directory keeps live runs off rather than admit spend it cannot see. Each reservation is
+journalled with its UTC day; one still open at midnight is charged to the day it settles, and a process
+started after midnight carries yesterday's open reservations into today as unreconciled spend. One client
+address runs at most one live investigation at a time and commits at most `COLDLINE_ORIGIN_DAILY_USD_CAP`
+(US$1.00) of the day's spend (kept in memory; the journalled global cap is the backstop). A paid-mode
+setting that is not a finite number in range (for example a cap of `nan`) keeps its default and switches
+live runs off with a visible reason; replay is unaffected. Each run records its attempted calls (`live_calls`) and any spend whose
 outcome is unknown (`unreconciled_usd`); the Impact page shows the latter separately, never as a confirmed
 zero. The session limit is keyed by session id, the
 per-address quota stops one visitor cycling cookies, and the daily cap is the backstop.
 
 Other settings: `ANTHROPIC_API_KEY`, `COLDLINE_MODEL` (default `claude-sonnet-5-5`), `COLDLINE_EFFORT`
 (`medium`), `COLDLINE_THINKING` (`between_tools` on Sonnet 5.5, `adaptive` elsewhere),
-`COLDLINE_SERVER_FALLBACK` (`1`), `COLDLINE_REPLAY_SPEED` (`1.0` = recorded pacing, `0` = instant).
+`COLDLINE_SERVER_FALLBACK` (`1`), `COLDLINE_FALLBACK_MODELS` (`claude-sonnet-5` for Sonnet 5.5, none for
+other models; up to three, comma-separated), `COLDLINE_ORIGIN_CONCURRENT_LIVE` (`1`),
+`COLDLINE_ORIGIN_DAILY_USD_CAP` (`1.00`), `COLDLINE_REPLAY_SPEED` (`1.0` = recorded pacing, `0` = instant).
 
 ## Evals
 

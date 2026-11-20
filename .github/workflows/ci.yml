@@ -25,6 +25,18 @@ jobs:
       - run: uv run ruff check .
       - run: uv run pytest -q
 
+  # Known advisories (OSV / PyPI) for every locked runtime dependency, by exact version and hash. A signal,
+  # not a deploy gate: a new advisory turns this job red without blocking an unrelated fix from shipping.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.5.31"
+      - run: uv export --frozen --no-dev --no-emit-project --format requirements-txt -o requirements.txt
+      - run: uvx --from pip-audit==2.9.0 pip-audit --disable-pip --progress-spinner off -r requirements.txt
+
   deploy:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

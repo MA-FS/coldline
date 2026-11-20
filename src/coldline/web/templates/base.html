@@ -49,6 +49,7 @@
   </header>
 
   <main class="main" id="main">
+    {% if session_notice %}<div class="session-notice" role="status" id="session-notice">{{ icon('info') }}<span>{{ session_notice }}</span></div>{% endif %}
     {% block content %}{% endblock %}
   </main>
 

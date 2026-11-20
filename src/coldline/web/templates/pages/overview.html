@@ -1,6 +1,7 @@
 {#- Plant overview (landing page).
     Context: base_context(...) + plant (PlantView), detail (views.chiller_detail dict), run (RunTrace|None),
-             approvals (list[Approval]), scenarios (list[Scenario]), poll_url (optional str for live mimic refresh) -#}
+             approvals (list[Approval]), scenarios (list[Scenario]), poll_url (optional str for live mimic refresh),
+             rev (state revision: the mimic's poll carries it, and a change re-renders the whole page) -#}
 {% extends "base.html" %}
 {% from "components/icons.html" import icon %}
 {% import "components/ui.html" as ui %}
@@ -11,7 +12,7 @@
 {% set P = href_prefix or "" %}
 {% set busy = run is not none and run.status == RunStatus.RUNNING %}
 {% set busy_title = "The agent is investigating; wait for it to finish (or reset the plant)" %}
-<div id="overview">
+<div id="overview" data-rev="{{ rev|default('') }}">
   <div class="page-head">
     <div>
       <h1>Plant Overview</h1>
@@ -51,7 +52,7 @@
   </div>
 
   <div class="ov">
-    <section class="panel ov-mimic" id="mimic" aria-label="Plant mimic"
+    <section class="panel ov-mimic" id="mimic" aria-label="Plant mimic" data-rev="{{ rev|default('') }}"
       {% if poll_url %}hx-get="{{ poll_url }}" hx-trigger="every 5s, plant-changed from:body" hx-select="#mimic" hx-swap="outerHTML" hx-select-oob="#clock,#nav-approvals-count,#mode-pill" hx-disinherit="*"{% endif %}>
       <div class="mimic-wrap">{{ plant_mimic(plant, selected=detail.asset.id if detail else 'CH4', prefix=P) }}</div>
       <p class="mimic-hint">{{ icon('arrow-right', 'icon-sm') }}Swipe sideways to see the whole plant</p>

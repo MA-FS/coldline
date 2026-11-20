@@ -1,0 +1,7 @@
+{#- The Handover page's own refresh found its run gone (plant reset or session expired). Context: gone (run id) -#}
+{% import "components/ui.html" as ui %}
+<div id="handover-banner" class="ho-banner ho-banner--superseded" role="status">
+  <p><b>{{ gone }} is no longer in this session: the plant was reset or the session expired. Nothing in this note is current; reload the page.</b></p>
+</div>
+<span id="handover-state">{{ ui.badge('No longer in this session', 'amber') }}</span>
+<section class="panel" id="handover-now"><div class="panel-body"><p class="muted small">Reload the page to see the current plant.</p></div></section>

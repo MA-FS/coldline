@@ -75,7 +75,7 @@
 
     {% if run.handover_note %}
     {% call ui.panel("Draft handover", id="handover-draft", meta="Agent draft · citations link to evidence") %}
-      <div class="prose small">{{ run.handover_note|markdown }}</div>
+      <div class="prose small">{{ run.handover_note|handover }}</div>
     {% endcall %}
     {% endif %}
   </div>

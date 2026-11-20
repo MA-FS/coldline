@@ -137,3 +137,31 @@ def test_history_is_bounded_and_ids_are_never_reused() -> None:
 def test_public_api_allowlist() -> None:
     protocol = {k for k in vars(PlantSystems) if not k.startswith("_")}
     assert {k for k in dir(Sandbox) if not k.startswith("_")} == protocol | {"advance_wall_time"}
+
+
+def test_a_recently_used_sandbox_is_kept_and_the_newcomer_refused() -> None:
+    """The review's case: at capacity, a second address's arrival evicted the first visitor's sandbox. A
+    sandbox used within the protection window now stays; the new visitor is refused instead."""
+    wall = 0.0
+    manager = SessionManager(3600, 1, protect_recent_s=600, clock=lambda: wall)
+    first = manager.get("first", origin="203.0.113.7")
+    wall = 300.0
+    with pytest.raises(SessionCapacityError):
+        manager.get("second", origin="198.51.100.2")
+    assert manager.get("first", origin="203.0.113.7") is first
+    wall = 300.0 + 601  # idle past the window: now it can make room
+    manager.get("second", origin="198.51.100.2")
+    assert "first" not in manager
+
+
+def test_a_visitor_whose_sandbox_was_cleared_is_told_why_once() -> None:
+    wall = 0.0
+    manager = SessionManager(100, 1, clock=lambda: wall)
+    manager.get("a")
+    manager.get("b")  # capacity: a is cleared
+    manager.get("a")  # a comes back to a fresh plant (b is cleared in turn)
+    assert manager.take_notice("a") == "capacity" and manager.take_notice("a") == ""
+    wall = 200.0  # past the TTL
+    manager.get("a")
+    assert manager.take_notice("a") == "idle"
+    assert manager.take_notice("never-seen") == ""

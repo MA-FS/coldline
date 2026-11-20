@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import html
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -433,6 +435,13 @@ def test_security_headers(client: TestClient) -> None:
     assert r.headers["referrer-policy"] == "strict-origin-when-cross-origin"
     assert r.headers["x-content-type-options"] == "nosniff"
     assert "content-security-policy" in client.get("/static/js/app.js").headers
+    # Session pages and decisions are never cached; the stream keeps its own no-store; static files may be.
+    inject(client)
+    for path in ("/", "/handover", "/approvals", f"/runs/{rt(client).agent.list_runs(sid(client))[0].run_id}"):
+        assert client.get(path).headers["cache-control"] == "private, no-store", path
+    card = rt(client).agent.list_approvals(sid(client))[0]
+    assert decide(client, card, "decline").headers["cache-control"] == "private, no-store"
+    assert "no-store" not in client.get("/static/js/app.js").headers.get("cache-control", "")
 
 
 def test_templates_autoescape(client: TestClient) -> None:
@@ -506,3 +515,62 @@ def test_a_trace_page_whose_run_left_the_session_is_replaced_not_left_stale(clie
     assert r.status_code == 200 and 'id="main"' in r.text and "no longer in this session" in r.text
     assert "is no longer available" in r.headers["hx-trigger"]
     assert client.get(f"/runs/{run_id}").status_code == 404  # opened directly, it is still a 404
+
+
+# --------------------------------------------------------------------------- review fixes: what a tab shows
+
+
+def _rev(page: str) -> str:
+    overview = re.search(r'id="overview" data-rev="([0-9a-f]{12})"', page)
+    mimic = re.search(r'id="mimic" aria-label="Plant mimic" data-rev="([0-9a-f]{12})"', page)
+    assert overview and mimic and overview.group(1) == mimic.group(1), "page and mimic must carry one revision"
+    return overview.group(1)
+
+
+def test_the_mimic_poll_carries_the_state_revision_a_stale_tab_compares(client: TestClient) -> None:
+    """Two tabs, one session. Tab A finished the hero; tab B makes the reference probe stale, then resets.
+    The poll tab A makes (GET /, which the mimic swaps in) carries a new revision each time, which app.js
+    compares with the page's own to re-render the whole overview and disable old decision buttons."""
+    inject(client)
+    tab_a = _rev(client.get("/").text)
+    assert _rev(client.get("/").text) == tab_a  # nothing changed: polling alone never forces a refresh
+    client.post("/session/stale", data={"tag": "TT-402"}, headers=HX)  # tab B: reference probe goes stale
+    after_stale = _rev(client.get("/").text)
+    client.post("/session/reset", headers=HX)  # tab B: reset
+    after_reset = _rev(client.get("/").text)
+    assert len({tab_a, after_stale, after_reset}) == 3
+
+
+def test_a_compact_card_states_the_exact_change_before_its_buttons(client: TestClient) -> None:
+    """The overview's compact cards show what runs on approval (the exact note, the dispatch date and plant
+    time) before Approve, link to the full proposal, and keep the model's rationale apart."""
+    inject(client)
+    page = client.get("/").text
+    panel = page.split('id="agent-approvals"', 1)[1]
+    for approval in rt(client).agent.list_approvals(sid(client)):
+        card = html.unescape(panel.split(f'id="approval-{approval.id}"', 1)[1].split("</article>", 1)[0])
+        change = card.index("Runs on approval (set in code)")
+        assert change < card.index("Approve</span>"), approval.id
+        assert f'href="/approvals#approval-{approval.id}"' in card
+        assert approval.rationale not in card  # model text stays on the full card, labelled
+        if approval.action == "amend_work_order":
+            assert f'<blockquote class="approval-quote">{approval.payload["note"]}</blockquote>' in card
+        if approval.action == "change_dispatch":
+            assert "Change L-2231 dispatch from Sat 21 Nov 06:15 (plant time, UTC+08:00) to Sat 21 Nov 09:00" in card
+    full = client.get("/approvals").text
+    assert "Agent rationale (model-written, not verified)" in full
+
+
+def test_a_visitor_whose_sandbox_was_cleared_sees_why(client: TestClient) -> None:
+    client.get("/")
+    inject(client)
+    manager = rt(client).sessions
+    with manager._lock:  # the sandbox is cleared for capacity, as another visitor's arrival would
+        manager._drop(sid(client), "capacity", [])
+    rt(client).forget(sid(client))
+    page = html.unescape(client.get("/").text)
+    assert 'id="session-notice"' in page and "to make room for other visitors" in page
+    assert "nobody else's were affected" in page
+    assert 'id="session-notice"' in client.get("/").text  # shown until the visitor starts something new
+    inject(client)
+    assert 'id="session-notice"' not in client.get("/").text

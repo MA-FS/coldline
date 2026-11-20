@@ -213,7 +213,10 @@ async def test_anthropic_client_request_shape() -> None:
     assert kw["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert kw["cache_control"] == {"type": "ephemeral"}
     assert kw["thinking"] == {"type": "between_tools"} and kw["output_config"] == {"effort": "medium"}
-    assert kw["fallbacks"] == "default" and kw["betas"] == ["server-side-fallback-2026-07-01"]
+    # A named fallback with the same output cap (never "default"): the attempts the budget reserves for are
+    # exactly the attempts the request allows.
+    assert kw["fallbacks"] == [{"model": "claude-sonnet-5", "max_tokens": 3000}]
+    assert kw["betas"] == ["server-side-fallback-2026-07-01"]
     assert "tool_choice" not in kw
     assert resp.text == "Checking CH4." and resp.tool_calls[0].name == "get_lot"
     assert resp.raw_content[0].signature == "sig"  # thinking blocks go back unchanged
@@ -230,7 +233,29 @@ def test_settings_from_env() -> None:
                                 "COLDLINE_LIVE_ENABLED": "0", "ANTHROPIC_API_KEY": "x"})
     assert (s.model, s.thinking, s.daily_usd_cap, s.live_enabled, s.api_key_present) == (
         "claude-opus-5-5", "adaptive", 1.5, False, True)
-    assert AgentSettings.from_env({}).thinking == "between_tools"
+    assert s.fallbacks == () and not s.config_errors  # no default fallback for a model without one
+    default = AgentSettings.from_env({})
+    assert default.thinking == "between_tools" and default.fallbacks == ("claude-sonnet-5",)
+    assert AgentSettings.from_env({"COLDLINE_SERVER_FALLBACK": "0"}).fallbacks == ()
+    named = AgentSettings.from_env({"COLDLINE_FALLBACK_MODELS": "claude-sonnet-5, claude-haiku-5-5"})
+    assert named.fallbacks == ("claude-sonnet-5", "claude-haiku-5-5") and not named.config_errors
+
+
+@pytest.mark.parametrize("env", [
+    {"COLDLINE_DAILY_USD_CAP": "nan"}, {"COLDLINE_DAILY_USD_CAP": "inf"}, {"COLDLINE_DAILY_USD_CAP": "-1"},
+    {"COLDLINE_CALL_TIMEOUT_S": "0"}, {"COLDLINE_RUN_TIMEOUT_S": "1e999"}, {"COLDLINE_MAX_TOKENS_PER_CALL": "x"},
+    {"COLDLINE_FALLBACK_MODELS": "a,b,c,d"}, {"COLDLINE_FALLBACK_MODELS": "claude-sonnet-5-5"},
+], ids=["nan_cap", "inf_cap", "negative_cap", "zero_timeout", "infinite_timeout", "not_a_number",
+        "four_fallbacks", "fallback_is_primary"])
+async def test_invalid_paid_mode_settings_fall_back_to_replay(env: dict[str, str]) -> None:
+    """A non-finite cap would disable every comparison against it: an invalid paid-mode setting keeps its safe
+    default and switches live runs off, with a visible reason; replay still works."""
+    s = AgentSettings.from_env({"ANTHROPIC_API_KEY": "x", "COLDLINE_REPLAY_SPEED": "0", **env})
+    assert s.config_errors and s.daily_usd_cap == 3.0
+    svc = AgentService(s, live_client_factory=lambda _: pytest.fail("no live call may be made"))
+    assert not svc.live_status("s").live_available and "invalid" in svc.live_status("s").reason
+    run = await svc.run_to_completion("s", plant(Scenario.DOOR_OPEN), mode="live")
+    assert run.mode == "replay" and "invalid" in run.extra["fallback_reason"] and run.handover_note
 
 
 async def test_forget_session_drops_state() -> None:

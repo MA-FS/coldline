@@ -92,8 +92,9 @@ def test_delayed_decision_rechecks_that_the_new_dispatch_time_is_still_ahead() -
 
 
 def test_release_proposal_names_the_hold_it_releases() -> None:
-    p = plant(M)
+    p = plant()
     first = p.place_qa_hold("L-2231", "Check", "QA Manager", [])
+    p.tick(31 * 60)  # verified clearance: 30 minutes of fresh, agreeing readings after the hold
     ctx = context(p)
     investigate_ch4(ctx)
     call(ctx, "propose_release_qa_hold", lot_id="L-2231", rationale="Handheld reading confirmed 2.0 °C.",

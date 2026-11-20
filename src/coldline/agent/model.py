@@ -19,7 +19,7 @@ import anthropic
 from pydantic import BaseModel, Field
 
 from coldline.agent.config import DEFAULT_MODEL, AgentSettings
-from coldline.agent.pricing import Usage
+from coldline.agent.pricing import Attempt, Usage
 
 SERVER_FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
@@ -115,10 +115,16 @@ class AnthropicModelClient:
             # Automatic breakpoint on the last block: each loop iteration re-reads the prior turns from cache.
             "cache_control": {"type": "ephemeral"},
         }
+        fallbacks = self._settings.fallbacks
         try:
-            if self._settings.server_fallback:
+            if fallbacks:
+                # Named fallbacks only, each capped at the same output limit: the models and the number of
+                # billed attempts are then known before the call, so the budget can reserve all of them
+                # (``pricing.reservation_usd``). A fallback inherits the request's thinking where its model
+                # supports it, and otherwise runs with thinking disabled.
                 response = await self._client.beta.messages.create(
-                    **params, betas=[SERVER_FALLBACK_BETA], fallbacks="default", timeout=timeout_s
+                    **params, betas=[SERVER_FALLBACK_BETA], timeout=timeout_s,
+                    fallbacks=[{"model": m, "max_tokens": max_tokens} for m in fallbacks],
                 )
             else:
                 response = await self._client.messages.create(**params, timeout=timeout_s)
@@ -148,21 +154,38 @@ def _normalise(response: Any) -> ModelResponse:
             notes.append(block.thinking.strip())
         elif kind == "tool_use":
             calls.append(ToolCall(id=block.id, name=block.name, input=dict(block.input or {})))
-    u = response.usage
-    usage = Usage(
-        input_tokens=u.input_tokens or 0,
-        output_tokens=u.output_tokens or 0,
-        cache_creation_input_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
-        cache_read_input_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
-    )
     return ModelResponse(
         model=response.model,
         stop_reason=response.stop_reason or "end_turn",
         text="\n".join(notes),
         tool_calls=calls,
-        usage=usage,
+        usage=billed_usage(response.usage),
         raw_content=list(response.content),
     )
+
+
+def _tokens(obj: Any, name: str) -> int:
+    return int(getattr(obj, name, 0) or 0)
+
+
+def billed_usage(u: Any) -> Usage:
+    """Usage for every billed attempt of one call. With server-side fallback the top-level counters cover
+    only the attempt that produced the message; ``usage.iterations`` lists each attempt (a declined primary,
+    the fallback that answered) with its own model and counts, and is the source of truth for billing."""
+    top = Usage(
+        input_tokens=_tokens(u, "input_tokens"),
+        output_tokens=_tokens(u, "output_tokens"),
+        cache_creation_input_tokens=_tokens(u, "cache_creation_input_tokens"),
+        cache_read_input_tokens=_tokens(u, "cache_read_input_tokens"),
+    )
+    attempts = [
+        Attempt(model=getattr(i, "model", None) or None, kind=str(getattr(i, "type", "") or "message"),
+                input_tokens=_tokens(i, "input_tokens"), output_tokens=_tokens(i, "output_tokens"),
+                cache_creation_input_tokens=_tokens(i, "cache_creation_input_tokens"),
+                cache_read_input_tokens=_tokens(i, "cache_read_input_tokens"))
+        for i in getattr(u, "iterations", None) or []
+    ]
+    return Usage.billed(top, attempts)
 
 
 # --------------------------------------------------------------------------- scripted / recorded
@@ -178,7 +201,7 @@ class ScriptedTurn(BaseModel):
 
     think: str = ""
     tool_calls: list[ScriptedCall] = Field(default_factory=list)
-    usage: dict[str, int] = Field(default_factory=dict)
+    usage: dict[str, Any] = Field(default_factory=dict)  # Usage.as_dict(), with per-attempt iterations
     latency_ms: int = 0
     model: str = DEFAULT_MODEL
     stop_reason: str = ""  # default: "tool_use" when there are calls, else "end_turn"

@@ -136,6 +136,7 @@ env.filters.update(
     temp=views.fmt_value,
     cite=views.cite_chips,
     markdown=views.mini_markdown,
+    handover=views.handover_markdown,
     tier_tone=lambda t: TIER_TONE.get(t, "read") if t else "",
     status_tone=lambda s: STATUS_TONE.get(s, "neutral"),
     priority_tone=lambda p: PRIORITY_TONE.get(p, "low"),

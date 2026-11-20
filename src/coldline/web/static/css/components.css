@@ -203,6 +203,12 @@
 .approval-title { color: var(--text-1); font-weight: var(--fw-semibold); font-size: 15px; flex: 1; line-height: 1.35; }
 .approval-meta { color: var(--text-3); font-size: var(--fs-sm); display: flex; gap: var(--s-3); flex-wrap: wrap; font-family: var(--font-mono); font-size: 11.5px; }
 .approval-rationale { color: var(--text-2); font-size: var(--fs-md); margin: 0; }
+.approval-label { color: var(--text-3); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: var(--track-caps); margin-bottom: 2px; }
+.approval-change { border-left: 3px solid var(--accent); padding-left: 10px; }
+.approval-change-line { margin: 0; color: var(--text-1); font-size: var(--fs-md); }
+.approval-quote { margin: 6px 0 0; padding: 6px 10px; background: var(--bg-inset); border: 1px solid var(--line-soft); border-radius: var(--r-1); color: var(--text-1); font-size: var(--fs-sm); white-space: pre-wrap; word-break: break-word; }
+.approval-checks ul { margin: 0; padding-left: 1.2em; color: var(--text-2); font-size: var(--fs-sm); }
+.approval-more { font-size: var(--fs-sm); width: max-content; max-width: 100%; }
 .approval-payload { font-family: var(--font-mono); font-size: 12px; background: var(--bg-inset); border: 1px solid var(--line-soft); border-radius: var(--r-1); padding: 8px 10px; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
 .approval-actions { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; }
 .approval-tech { font-size: var(--fs-xs); color: var(--text-3); }
@@ -313,3 +319,7 @@
 .note { display: flex; gap: 10px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r-2); background: var(--bg-2); color: var(--text-2); font-size: var(--fs-sm); }
 .note .icon { color: var(--text-3); margin-top: 1px; }
 .note--untrusted { border-style: dashed; }
+
+/* a visitor whose earlier sandbox was cleared (idle, capacity) is told, not left with a silently fresh plant */
+.session-notice { display: flex; gap: var(--s-2); align-items: flex-start; margin: 0 0 var(--s-4); padding: var(--s-3) var(--s-4); border: 1px solid var(--amber-line); background: var(--amber-weak); border-radius: var(--r-2); color: var(--text-1); font-size: var(--fs-sm); }
+.session-notice .icon { color: var(--amber); flex: none; margin-top: 1px; }

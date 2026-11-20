@@ -27,8 +27,9 @@ support, takes low-risk actions itself, and asks a person before doing anything 
    remaining proposal **expires** (its evidence changed), and the agent re-investigates and concludes
    "Insufficient data" instead of guessing.
 6. **Chain the other scenarios** on the same plant. Holds, approvals and records carry over, older proposals
-   expire when a new fault begins, and each handover describes the plant as it is now: when it differs from
-   the recorded run, the note is composed in code rather than reusing recorded wording.
+   expire when a new fault begins, and each handover describes the plant as it was when the run finished:
+   when it differs from the recorded run, the note is composed in code rather than reusing recorded wording.
+   Open an earlier handover and it is marked superseded, with what changed since and the current holds.
 
 ![After the reference probe goes stale: the proposal has expired and the conclusion changed to insufficient data](docs/img/stale-probe.png)
 

@@ -155,7 +155,10 @@ def test_disposition_block_has_no_model_text(client: TestClient, scenario: str, 
 
     # Model prose lives below, in a section labelled as not authoritative (or is replaced by the replay
     # notice), and the model's own conclusion is kept in the trace.
-    assert lines.index(_strip(DISPOSITION_HEADING)) == 0
+    # The copy opens with the snapshot label (run and plant time), then the code-set disposition.
+    assert re.fullmatch(rf"Handover {run.run_id} · snapshot as at \w{{3}} \d+ \w{{3}} \d{{4}}, \d\d:\d\d "
+                        r"\(plant time\)", lines[0]), lines[0]
+    assert lines.index(_strip(DISPOSITION_HEADING)) == 1
     if _strip(NARRATIVE_HEADING) in lines:
         assert lines.index(_strip(NARRATIVE_HEADING)) > lines.index(block[-1])
     assert run.extra["gate"]["model_conclusion"] == ADVERSARIAL
@@ -193,3 +196,92 @@ def test_chained_investigations_keep_every_held_lot_in_the_copy(order: tuple[str
     lots = [x.split(" ", 1)[0] for x in block if x.startswith("L-")]
     own = sorted(second.extra["handover_facts"]["lots"])
     assert own and lots[:len(own)] == own, (lots, own)
+
+
+# --------------------------------------------------------------------------- a note is a snapshot (H1)
+
+
+def banner(page: str) -> list[str]:
+    """The superseded banner as copied: the lines of the copy target before the snapshot label."""
+    lines = clipboard(page)
+    return lines[: next(i for i, x in enumerate(lines) if x.startswith("Handover R-"))]
+
+
+def sources(page: str) -> dict[str, str]:
+    table = page.split('id="sources"', 1)[1].split("</table>", 1)[0]
+    rows = re.findall(r'<tr id="ev-([^"]+)">(.*?)</tr>', table, re.DOTALL)
+    return {rid: " ".join(html.unescape(re.sub(r"<[^>]+>", " ", body)).split()) for rid, body in rows}
+
+
+def test_an_earlier_note_is_marked_superseded_when_a_later_run_holds_its_lot(client: TestClient) -> None:
+    """The review's case: door open, then probe mismatch. The first note says L-2231 is not on hold while the
+    plant now holds it. Opened again, that note carries a superseded banner, inside the copied text, naming
+    the new hold; its sources show the lot as it was and as it is; the latest note stays current."""
+    first, _, plant = run_scenario(client, "door_open")
+    second, latest_page, plant = run_scenario(client, "probe_mismatch")
+    hold = plant.active_hold("L-2231")
+    assert hold is not None
+    page = client.get(f"/handover?run_id={first.run_id}").text
+    copied = banner(page)
+    assert copied[0].startswith("Superseded: this note is a snapshot as at "), copied
+    assert f"L-2231 is now on QA hold {hold.id}; this note shows it not on hold." in copied
+    assert f"A later investigation, {second.run_id}, wrote a newer handover. Open {second.run_id}" in copied
+    current = copied[next(i for i, x in enumerate(copied) if x.startswith("Current state at ")) + 1:]
+    assert f"L-2231 (CH4, due 06:15): on QA hold {hold.id}. {DO_NOT_SHIP}" in current
+    # The note itself is unchanged: as at its time, L-2231 was not on hold.
+    assert "L-2231 (CH4, due 06:15): not on hold." in disposition(clipboard(page))
+    row = sources(page)["L-2231"]
+    assert "ready" in row and "Now: " in row and "hold" in row.split("Now: ", 1)[1], row
+    assert 'Superseded' in page.split('id="handover-state"', 1)[1].split("</span>", 2)[1]
+    # The latest note is current: no banner, and its copy opens with its own snapshot label.
+    assert banner(latest_page) == [] and clipboard(latest_page)[0].startswith(f"Handover {second.run_id} ")
+
+
+def test_a_decision_after_the_handover_marks_the_note_superseded(client: TestClient) -> None:
+    """The hero note lists its proposals as waiting; once one is decided the note says so above itself."""
+    run, page, _ = run_scenario(client, "probe_mismatch")
+    assert banner(page) == []
+    dispatch = next(a for a in run.approvals if a.action == "change_dispatch")
+    client.post("/session/role", data={"role": "Shift Supervisor"}, headers=HX)
+    r = client.post(f"/approvals/{dispatch.id}/approve", data={"decision_token": dispatch.decision_token},
+                    headers=HX)
+    assert r.status_code == 200, r.text
+    copied = banner(client.get("/handover").text)
+    assert f"{dispatch.id} is now approved by Shift Supervisor; this note shows it pending." in copied, copied
+    assert "L-2231 is now due 09:00; this note says 06:15." in copied, copied
+    waiting = next(x for x in copied if x.startswith("Waiting"))
+    assert dispatch.id not in waiting, waiting  # the current state no longer lists it as waiting
+
+
+def test_a_later_run_without_a_handover_supersedes_the_last_note() -> None:
+    """A later investigation that ends without a handover leaves the previous note on the page, superseded,
+    and the current holds listed beside it (here the hold the incomplete run placed)."""
+    lib = RecordingLibrary()
+    mismatch = lib.items["probe_mismatch"]
+    for turn in mismatch.turns:
+        turn.tool_calls = [c for c in turn.tool_calls if c.name != "write_handover_note"]
+    agent = AgentService(AgentSettings(replay_speed=0.0, live_enabled=False), recordings=lib)
+    with TestClient(create_app(WebSettings(secret_key=KEY), agent)) as c:
+        first, _, plant = run_scenario(c, "door_open")
+        c.post("/session/inject", data={"scenario": "probe_mismatch"}, headers=HX)
+        _wait(c)
+        later = agent.list_runs(_sid(c))[0]
+        assert later.status.value == "incomplete" and not later.handover_note
+        page = c.get("/handover").text
+    copied = banner(page)
+    assert f"A later investigation, {later.run_id}, ended without a handover (incomplete). Open {later.run_id}" \
+        in copied, copied
+    hold = plant.active_hold("L-2231")
+    now_panel = page.split('id="handover-now"', 1)[1].split("</section>", 1)[0]
+    assert hold is not None and hold.id in now_panel and "Do not ship or load it" in now_panel
+    assert first.run_id in clipboard(page)[len(copied)]
+
+
+def test_an_open_handover_tab_learns_its_run_is_gone(client: TestClient) -> None:
+    """The page refreshes its banner; after a reset elsewhere it says the note is no longer current."""
+    run, page, _ = run_scenario(client, "door_open")
+    assert f'hx-get="/handover?run_id={run.run_id}"' in page and 'hx-trigger="every 10s"' in page
+    client.post("/session/reset", headers=HX)
+    r = client.get(f"/handover?run_id={run.run_id}", headers=HX)
+    assert r.status_code == 200 and "is no longer in this session" in r.text
+    assert client.get(f"/handover?run_id={run.run_id}").status_code == 404

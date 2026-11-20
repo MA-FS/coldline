@@ -13,6 +13,7 @@ from html import escape
 
 from markupsafe import Markup
 
+from coldline.agent.handover import DISPOSITION_HEADING, NARRATIVE_HEADING, VERIFIED_HEADING
 from coldline.contracts import (
     Alarm,
     AlarmPriority,
@@ -26,6 +27,9 @@ from coldline.contracts import (
     Scenario,
     Trend,
 )
+from coldline.records import evidence_kind, fmt_value
+
+__all__ = ["evidence_kind", "fmt_value"]  # re-exported: templates and pages use them from here
 
 # Display thresholds for the mimic. Carcase chiller air should sit around 0-4 °C; above this a value is
 # highlighted (amber) only when the tag is also part of an active alarm. Colour means abnormal, nothing else.
@@ -106,13 +110,6 @@ class PlantView:
     active_alarm_count: int
     scenario: Scenario | None
     lots_by_asset: dict[str, list[Lot]] = field(default_factory=dict)
-
-
-def fmt_value(v: float | None, digits: int = 1) -> str:
-    if v is None:
-        return "—"
-    s = f"{v:.{digits}f}"
-    return s.replace("-", "−")  # proper minus sign
 
 
 def trend_direction(trend: Trend | None, window: int = 15, eps: float = 0.3) -> str:
@@ -266,29 +263,6 @@ def plant_view(snap: PlantSnapshot, trends: list[Trend] | None = None,
 
 # --------------------------------------------------------------------------- evidence / citations
 
-_EVIDENCE_KINDS = [
-    (re.compile(r"^(TT|PT|TE|ZS|DS|EV\d+|C\d+)-"), "tag", "Historian tag"),
-    (re.compile(r"^L-"), "lot", "Lot"),
-    (re.compile(r"^WO-"), "wo", "Work order"),
-    (re.compile(r"^(ALM|AL)-"), "alarm", "Alarm"),
-    (re.compile(r"^(MSG|EM|IN)-"), "msg", "Inbox (untrusted)"),
-    (re.compile(r"^(H|QH)-"), "hold", "QA hold"),
-    (re.compile(r"^(PTW|PD|PERMIT)-"), "permit", "Permit draft"),
-    (re.compile(r"^(EV|DOOR)-"), "event", "Event"),
-    (re.compile(r"^R-"), "run", "Agent run"),
-    (re.compile(r"^(A|AP|APR)-"), "approval", "Approval"),
-    (re.compile(r"^(CH\d+|C\d+|BONING|DOCK)$"), "asset", "Asset"),
-]
-
-
-def evidence_kind(record_id: str) -> tuple[str, str]:
-    """('tag', 'Historian tag') for 'TT-401'. Unknown ids -> ('record', 'Record')."""
-    for rx, kind, label in _EVIDENCE_KINDS:
-        if rx.match(record_id):
-            return kind, label
-    return "record", "Record"
-
-
 _CITE = re.compile(r"\[([A-Z][A-Z0-9]*-[A-Za-z0-9.\-]+)\]")
 
 
@@ -358,6 +332,34 @@ def mini_markdown(md: str) -> Markup:
             para.append(line.strip())
     flush_para()
     close_list()
+    return Markup("\n".join(out))
+
+
+_SECTION_HEADINGS = {DISPOSITION_HEADING: "code", NARRATIVE_HEADING: "narrative", VERIFIED_HEADING: "code"}
+
+
+def handover_markdown(note: str) -> Markup:
+    """A handover note, one container per section: the code-owned disposition and checks, and between them the
+    agent narrative, rendered subordinate (indented, no heading elements). Each section keeps its label line,
+    so a copied note still says which part the model wrote. A replay note joins the section it sits in."""
+    sections: list[tuple[str, list[str]]] = [("label", [])]
+    for line in (note or "").splitlines():
+        kind = _SECTION_HEADINGS.get(line.strip())
+        if kind:
+            sections.append((kind, []))
+        sections[-1][1].append(line)
+    out = []
+    for kind, lines in sections:
+        body = "\n".join(lines).strip()
+        if not body:
+            continue
+        if kind == "narrative":
+            # Headings the model wrote (already demoted when the note was composed) never render as headings.
+            body = "\n".join(re.sub(r"^\s*#{1,6}\s+", "", ln) for ln in body.splitlines())
+            out.append(f'<section class="ho-sec ho-sec--narrative" aria-label="Agent narrative, model-written">'
+                       f"{mini_markdown(body)}</section>")
+        else:
+            out.append(f'<section class="ho-sec ho-sec--{kind}">{mini_markdown(body)}</section>')
     return Markup("\n".join(out))
 
 
