@@ -13,10 +13,12 @@ So the bound and the settlement both work per attempt:
   primary model, then each named fallback in order, each with the full output limit and an input that may
   carry the earlier attempts' partial output. Fallbacks are named explicitly (never ``"default"``), so the
   set of models and the number of attempts are known before the call is made.
-* :func:`cost_usd` prices each reported attempt at its own model's rate and adds them up. The provider names
-  the model of a fallback attempt (``fallback_message``) but not always of a ``message`` attempt. With one
-  named fallback an unnamed ``message`` attempt can only be the requested model; with more, it may be a
-  declined fallback too, so it is priced at the most expensive model the request allowed. An ambiguous
+* :func:`cost_usd` prices each reported attempt at the rate of the model that served it, and adds them up.
+  The provider does not always name that model. A request names at most one fallback (``MAX_FALLBACKS``), so
+  the model is still known: an unnamed ``message`` attempt is the requested model, an unnamed
+  ``fallback_message`` attempt is the fallback. (With two or more fallbacks an unnamed attempt could be any
+  of them, and its measured cost would be a guess; that is why the limit is one.) An attempt whose model
+  cannot be placed this way is priced at the most expensive model the request allowed, so an ambiguous
   liability is never settled below what it may have cost.
 * :func:`split_cost` separates what is **measured** from what is **estimated**. A declined attempt is reported
   in ``usage.iterations`` whether or not it is billed: under the provider's published rules a decline that
@@ -51,7 +53,7 @@ CONSERVATIVE = Price(input=10.00, output=50.00, cache_write=12.50, cache_read=1.
 # Refusal categories for which a decline before any output is billed, per the provider's published billing
 # rules ("How refusals are billed"). The list can change, which is why other declines are estimates, not zero.
 BILLED_BEFORE_OUTPUT = frozenset({"bio", "frontier_llm", "reasoning_extraction"})
-MAX_FALLBACKS = 3  # the API accepts one to three named fallback models
+MAX_FALLBACKS = 1  # the API accepts up to three; one keeps every attempt's model known (see above)
 
 
 @dataclass(frozen=True)
@@ -180,8 +182,11 @@ class CallCost:
 def _attempt_usd(a: Attempt, model: str, candidates: tuple[str, ...], pool: tuple[str, ...]) -> float:
     if a.model:
         return _priced(price_for(a.model), a)
-    if a.kind == "message" and candidates and len(candidates) <= 2:
-        return _priced(price_for(candidates[0]), a)
+    if candidates and len(candidates) <= 1 + MAX_FALLBACKS:  # one fallback at most: the model is known
+        if a.kind == "message":
+            return _priced(price_for(candidates[0]), a)
+        if a.kind == "fallback_message" and len(candidates) == 2:
+            return _priced(price_for(candidates[1]), a)
     return max(_priced(price_for(m), a) for m in pool)
 
 
@@ -189,9 +194,9 @@ def split_cost(model: str, usage: Usage, candidates: tuple[str, ...] = ()) -> Ca
     """What one call cost, measured and estimated apart. ``candidates`` are the attempts the request allowed,
     the requested model first.
 
-    Each reported attempt is priced at its own model. An attempt that names no model is the requested model's
-    when it is a ``message`` attempt and the request named at most one fallback; otherwise it is priced at
-    the most expensive of ``candidates`` and ``model``."""
+    Each reported attempt is priced at its own model. An attempt that names no model is the requested
+    model's (``message``) or the one fallback's (``fallback_message``); one that cannot be placed is priced
+    at the most expensive of ``candidates`` and ``model``."""
     if not usage.attempts:
         return CallCost(measured=round(_priced(price_for(model), usage) / 1_000_000, 6))
     pool = tuple(dict.fromkeys((model, *candidates)))

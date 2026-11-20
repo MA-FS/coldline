@@ -316,12 +316,12 @@ carry the `prompt_version` they were made with.
 | Run / call timeout | 90 s / 40 s | `COLDLINE_RUN_TIMEOUT_S`, `COLDLINE_CALL_TIMEOUT_S` |
 
 Before each call the loop reserves an upper bound: for every attempt the request allows (the model, then
-each named fallback), one token per input byte (a token always covers at least one byte, and a fallback may
+its one named fallback), one token per input byte (a token always covers at least one byte, and a fallback may
 also read the declined attempt's partial output) at that model's cache-write rate, plus the full output
 limit. The SDK does not retry. After the call, every attempt the response reports in `usage.iterations` is
 settled at its own model's rate (the top-level usage covers only the attempt that answered); an attempt that
-names no model is the requested model's when only one fallback is named, and is otherwise priced at the most
-expensive model allowed. Spend is split in two (`pricing.split_cost`). **Measured** is the provider-reported
+names no model is the requested model's (`message`) or the fallback's (`fallback_message`), which is why at
+most one fallback may be named; one that cannot be placed is priced at the most expensive model allowed. Spend is split in two (`pricing.split_cost`). **Measured** is the provider-reported
 usage of attempts the provider's published billing rules bill: every attempt that answered or produced
 output, and a decline before any output in a billed category (`BILLED_BEFORE_OUTPUT`: `bio`, `frontier_llm`,
 `reasoning_extraction`). **Estimated** is a decline before any output in any other category, or one whose
@@ -353,7 +353,7 @@ per-address quota stops one visitor cycling cookies, and the daily cap is the ba
 Other settings: `ANTHROPIC_API_KEY`, `COLDLINE_MODEL` (default `claude-sonnet-5-5`), `COLDLINE_EFFORT`
 (`medium`), `COLDLINE_THINKING` (`between_tools` on Sonnet 5.5, `adaptive` elsewhere),
 `COLDLINE_SERVER_FALLBACK` (`1`), `COLDLINE_FALLBACK_MODELS` (`claude-sonnet-5` for Sonnet 5.5, none for
-other models; up to three, comma-separated), `COLDLINE_ORIGIN_CONCURRENT_LIVE` (`1`),
+other models; at most one, so each billed attempt is priced at the model that served it), `COLDLINE_ORIGIN_CONCURRENT_LIVE` (`1`),
 `COLDLINE_ORIGIN_DAILY_USD_CAP` (`1.00`), `COLDLINE_REPLAY_SPEED` (`1.0` = recorded pacing, `0` = instant).
 
 ## Evals

@@ -150,7 +150,7 @@ def test_reservation_covers_every_attempt_the_request_allows() -> None:
     assert worst <= reserved + 1e-9
     assert reservation_usd(permitted_models("claude-sonnet-5-5"), bound, 3000) < reserved / 1.9
     with pytest.raises(ValueError):
-        permitted_models("claude-sonnet-5-5", ("a", "b", "c", "d"))  # the API takes at most three
+        permitted_models("claude-sonnet-5-5", ("a", "b"))  # one fallback at most: see the test below
 
 
 def _two_attempts(model: str = "claude-sonnet-5") -> SimpleNamespace:
@@ -181,12 +181,40 @@ def test_every_billed_attempt_is_settled_at_its_own_rate() -> None:
                                       cache_read_input_tokens=10_000),))
     assert cost_usd("claude-sonnet-5-5", unnamed, ("claude-sonnet-5-5", "claude-sonnet-5")) == pytest.approx(
         (1000 * 2.00 + 200 * 10.00 + 10_000 * 0.10) / 1e6)  # Sonnet 5.5's cache-read rate, not Sonnet 5's
-    # ...with more fallbacks it may be a declined fallback: priced at the most expensive model allowed.
+    # ...and an attempt that cannot be placed (a longer chain than is supported) is priced at the most
+    # expensive model allowed.
     chain = ("claude-haiku-5-5", "claude-sonnet-5", "claude-opus-5-5")
     assert cost_usd("claude-haiku-5-5", unnamed, chain) == pytest.approx(
         (1000 * 4.00 + 200 * 20.00 + 10_000 * 0.20) / 1e6)
     # A recorded turn keeps its attempts.
     assert Usage.from_dict(usage.as_dict()) == usage
+
+
+def test_at_most_one_fallback_so_measured_spend_is_priced_at_the_model_that_served_it() -> None:
+    """With two fallbacks an attempt the provider does not name could be any of them, and was priced as
+    measured spend at the most expensive. One fallback at most, checked when the settings are read and when
+    the service starts; with one, every unnamed attempt is placed by its kind."""
+    from agent_helpers import settings
+
+    from coldline.agent.pricing import permitted_models, split_cost
+
+    two = AgentSettings.from_env({"ANTHROPIC_API_KEY": "x",
+                                  "COLDLINE_FALLBACK_MODELS": "claude-sonnet-5, claude-haiku-5-5"})
+    assert two.fallbacks == () and any("COLDLINE_FALLBACK_MODELS" in e for e in two.config_errors)
+    with pytest.raises(ValueError):
+        permitted_models("claude-sonnet-5-5", ("claude-sonnet-5", "claude-haiku-5-5"))
+    with pytest.raises(ValueError):
+        AgentService(settings(fallback_models=("claude-sonnet-5", "claude-haiku-5-5")))
+    # One fallback: the declined primary and the answering fallback, neither named by the provider.
+    chain = ("claude-sonnet-5", "claude-haiku-5-5")
+    declined = Attempt(model=None, kind="message", input_tokens=1000, output_tokens=50, declined=True,
+                       category="cyber")
+    answered = Attempt(model=None, kind="fallback_message", input_tokens=1000, output_tokens=200,
+                       cache_read_input_tokens=10_000)
+    cost = split_cost("claude-sonnet-5", Usage.billed(Usage(), [declined, answered]), chain)
+    sonnet = (1000 * 2.00 + 50 * 10.00) / 1e6  # the primary that served the declined attempt
+    haiku = (1000 * 0.10 + 200 * 0.50 + 10_000 * 0.01) / 1e6  # the fallback that answered, not Sonnet's rate
+    assert cost.measured == pytest.approx(sonnet + haiku) and cost.estimated == 0.0
 
 
 async def test_a_fallback_near_the_cap_is_reserved_and_settled_in_full() -> None:
@@ -515,6 +543,51 @@ def test_a_reservation_open_at_midnight_settles_against_the_day_it_settles(tmp_p
     g.settle(r, 0.1)
     ledger = json.loads(path.read_text())
     assert ledger["day"] > TODAY and ledger["spent_usd"] == pytest.approx(0.1) and ledger["outstanding"] == {}
+
+
+class _Crash(BaseException):
+    """The process stops here: nothing after this point runs, and nothing is written."""
+
+
+@pytest.mark.parametrize("settle", ["retain", "settle"])
+@pytest.mark.parametrize("writes", [0, 1, 2], ids=["before_rollover_write", "after_rollover_write", "after_all"])
+def test_a_crash_at_any_step_of_the_midnight_rollover_loses_no_open_reservation(tmp_path, monkeypatch,
+                                                                               settle, writes) -> None:
+    """US$0.25 retained and US$0.40 in flight at 23:59:59; the call resolves two seconds later. The first
+    settlement after midnight writes the ledger twice (the new day, then the settlement). The process stops
+    after 0, 1 or 2 of those writes; a restart must still count the in-flight US$0.40 (or its settled cost)
+    and keep yesterday's US$0.25 as a dated record."""
+    from coldline.agent import budget as budget_module
+
+    day_start = datetime(2027, 1, 14, tzinfo=UTC).timestamp()
+    clock = Clock(day_start + 86_399)  # 23:59:59 UTC
+    path = tmp_path / "agent_spend.json"
+    g = guard(clock, state_path=path)
+    g.retain(g.reserve(0.25))
+    r = g.reserve(0.40)
+    clock.t += 2  # 00:00:01 the next day
+    real_replace, done = budget_module.os.replace, []
+
+    def replace(src, dst):
+        if len(done) >= writes:
+            raise _Crash
+        real_replace(src, dst)
+        done.append(dst)
+
+    monkeypatch.setattr(budget_module.os, "replace", replace)
+    try:
+        g.retain(r) if settle == "retain" else g.settle(r, 0.10)
+    except _Crash:
+        pass
+    monkeypatch.undo()
+    g.close()  # the process is gone; a new one starts on the same data directory
+    status = guard(clock, state_path=path).status("s", live_enabled=True, api_key_present=True)
+    assert status.ledger_ok and status.carried_unreconciled == {"2027-01-14": pytest.approx(0.25)}
+    if writes < 2 or settle == "retain":  # still open (counted as unreconciled) or retained in full
+        assert status.spent_today_usd == pytest.approx(0.40) and status.unreconciled_usd == pytest.approx(0.40)
+    else:
+        assert status.spent_today_usd == pytest.approx(0.10) and status.unreconciled_usd == 0
+    assert status.reserved_usd == 0
 
 
 def test_a_settlement_above_its_reservation_switches_live_runs_off() -> None:

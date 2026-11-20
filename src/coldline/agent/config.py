@@ -14,7 +14,11 @@ DEFAULT_MODEL = "claude-sonnet-5-5"
 # Named fallback per model, used when COLDLINE_FALLBACK_MODELS is not set. Claude Sonnet 5.5's fallback list
 # may name only Claude Sonnet 5; other models get none unless an operator names them.
 DEFAULT_FALLBACKS = {"claude-sonnet-5-5": ("claude-sonnet-5",)}
-MAX_FALLBACK_MODELS = 3
+# At most one named fallback (the API accepts up to three). With one, every attempt a response reports is
+# attributed to a known model even when the provider omits its name: an unnamed `message` attempt is the
+# requested model and an unnamed `fallback_message` attempt is the fallback. With more, an unnamed attempt
+# could be any of them, so measured spend would have to be priced at the most expensive one.
+MAX_FALLBACK_MODELS = 1
 
 
 def _bool(env: Mapping[str, str], name: str, default: bool) -> bool:
@@ -62,7 +66,7 @@ class AgentSettings:
     effort: str = "medium"  # output_config.effort; "medium" suits multi-step tool use
     thinking: str = "between_tools"  # "between_tools" (no extended thinking) or "adaptive"
     server_fallback: bool = True  # API-side retry on a named fallback model if a request is declined
-    fallback_models: tuple[str, ...] = ("claude-sonnet-5",)  # named fallbacks, tried in order (max 3)
+    fallback_models: tuple[str, ...] = ("claude-sonnet-5",)  # the named fallback (at most one)
     live_enabled: bool = True  # kill switch: COLDLINE_LIVE_ENABLED=0 forces replay for everyone
     api_key_present: bool = False
     daily_usd_cap: float = 3.00  # global spend ceiling across all visitors, per UTC day

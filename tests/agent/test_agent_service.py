@@ -237,16 +237,16 @@ def test_settings_from_env() -> None:
     default = AgentSettings.from_env({})
     assert default.thinking == "between_tools" and default.fallbacks == ("claude-sonnet-5",)
     assert AgentSettings.from_env({"COLDLINE_SERVER_FALLBACK": "0"}).fallbacks == ()
-    named = AgentSettings.from_env({"COLDLINE_FALLBACK_MODELS": "claude-sonnet-5, claude-haiku-5-5"})
-    assert named.fallbacks == ("claude-sonnet-5", "claude-haiku-5-5") and not named.config_errors
+    named = AgentSettings.from_env({"COLDLINE_FALLBACK_MODELS": "claude-haiku-5-5"})
+    assert named.fallbacks == ("claude-haiku-5-5",) and not named.config_errors
 
 
 @pytest.mark.parametrize("env", [
     {"COLDLINE_DAILY_USD_CAP": "nan"}, {"COLDLINE_DAILY_USD_CAP": "inf"}, {"COLDLINE_DAILY_USD_CAP": "-1"},
     {"COLDLINE_CALL_TIMEOUT_S": "0"}, {"COLDLINE_RUN_TIMEOUT_S": "1e999"}, {"COLDLINE_MAX_TOKENS_PER_CALL": "x"},
-    {"COLDLINE_FALLBACK_MODELS": "a,b,c,d"}, {"COLDLINE_FALLBACK_MODELS": "claude-sonnet-5-5"},
+    {"COLDLINE_FALLBACK_MODELS": "claude-sonnet-5, claude-haiku-5-5"}, {"COLDLINE_FALLBACK_MODELS": "claude-sonnet-5-5"},
 ], ids=["nan_cap", "inf_cap", "negative_cap", "zero_timeout", "infinite_timeout", "not_a_number",
-        "four_fallbacks", "fallback_is_primary"])
+        "two_fallbacks", "fallback_is_primary"])
 async def test_invalid_paid_mode_settings_fall_back_to_replay(env: dict[str, str]) -> None:
     """A non-finite cap would disable every comparison against it: an invalid paid-mode setting keeps its safe
     default and switches live runs off, with a visible reason; replay still works."""

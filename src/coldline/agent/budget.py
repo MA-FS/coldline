@@ -368,7 +368,13 @@ class BudgetGuard:
 
     def _roll_day(self) -> None:
         """A new UTC day starts a new cap. Open reservations stay open (and counted): when they settle, they
-        are charged to the day they settle on, the same day a restarted process would carry them into."""
+        are charged to the day they settle on, the same day a restarted process would carry them into.
+
+        Crash-safe: the new day is journalled in one atomic write that still holds every open reservation and
+        the dated ``carried_unreconciled`` record, and only then does a settlement remove its reservation (in
+        a second atomic write). A process that stops before the first write restarts from yesterday's ledger
+        and carries its open reservations in; one that stops between the writes restarts from the new day
+        with the reservation still open. Either way nothing in flight is lost."""
         today = self._today()
         if today != self._day:
             self._carry(self._day, self._unreconciled)
@@ -490,10 +496,8 @@ class BudgetGuard:
     def settle(self, reservation: Reservation, actual_usd: float) -> None:
         """Replace a reservation with the call's real (or zero, for an API error) cost."""
         with self._lock:
-            self._reservations.pop(reservation.id, None)
-            self._reserved_on.pop(reservation.id, None)
-            self._reservation_origin.pop(reservation.id, None)
-            self._roll_day()
+            self._roll_day()  # first, while the reservation is still open: see _roll_day
+            self._release(reservation)
             self._spent += max(0.0, actual_usd)
             self._charge(reservation.origin, max(0.0, actual_usd))
             if actual_usd > reservation.usd + 1e-9:
@@ -508,14 +512,17 @@ class BudgetGuard:
         """The call's outcome is unknown (timeout, lost connection, cancelled): keep the whole reservation
         as spend, marked unreconciled."""
         with self._lock:
-            self._reservations.pop(reservation.id, None)
-            self._reserved_on.pop(reservation.id, None)
-            self._reservation_origin.pop(reservation.id, None)
-            self._roll_day()
+            self._roll_day()  # first, while the reservation is still open: see _roll_day
+            self._release(reservation)
             self._spent += reservation.usd
             self._unreconciled += reservation.usd
             self._charge(reservation.origin, reservation.usd)
             self._save()
+
+    def _release(self, reservation: Reservation) -> None:
+        self._reservations.pop(reservation.id, None)
+        self._reserved_on.pop(reservation.id, None)
+        self._reservation_origin.pop(reservation.id, None)
 
     def _charge(self, origin: str, usd: float) -> None:
         if origin:

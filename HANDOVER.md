@@ -54,7 +54,7 @@ Everything is an environment variable with a safe default.
 | `COLDLINE_DAILY_USD_CAP` | 3.00 | Global live spend per UTC day. |
 | `COLDLINE_SESSION_RUNS_PER_HOUR` / `COLDLINE_ORIGIN_RUNS_PER_DAY` / `COLDLINE_MAX_CONCURRENT_LIVE` | 3 / 6 / 2 | Live runs per visitor per hour; per client address per day; in flight at once. |
 | `COLDLINE_ORIGIN_CONCURRENT_LIVE` / `COLDLINE_ORIGIN_DAILY_USD_CAP` | 1 / 1.00 | Live runs in flight per client address; one address's share of the daily cap. |
-| `COLDLINE_SERVER_FALLBACK` / `COLDLINE_FALLBACK_MODELS` | 1 / `claude-sonnet-5` for Sonnet 5.5 | Server-side fallback on a refusal, to the named models only (at most three). Every attempt is reserved and settled. |
+| `COLDLINE_SERVER_FALLBACK` / `COLDLINE_FALLBACK_MODELS` | 1 / `claude-sonnet-5` for Sonnet 5.5 | Server-side fallback on a refusal, to one named model only (a second is a configuration error). Every attempt is reserved and settled. |
 | `COLDLINE_MAX_MODEL_CALLS` / `COLDLINE_MAX_TOKENS_PER_CALL` | 8 / 3000 | Bounds per run and per call. |
 | `COLDLINE_RUN_TIMEOUT_S` / `COLDLINE_CALL_TIMEOUT_S` | 90 / 40 | Wall-clock bounds. |
 | `COLDLINE_MODEL` / `COLDLINE_EFFORT` / `COLDLINE_THINKING` | `claude-sonnet-5-5` / `medium` / per model | Model settings. A cost or timeout value that is not a finite number in range switches live runs off. |
